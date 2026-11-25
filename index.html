@@ -756,6 +756,24 @@ html[data-fs="xl"] .cat-grid{grid-template-columns:repeat(auto-fill,minmax(104px
 .seg button{overflow-wrap:normal;word-break:normal;hyphens:none}
 .card-h .seg{width:auto!important;flex:1 1 190px;max-width:280px}
 
+/* ---------- v2.5: personel ---------- */
+.st-row.off{opacity:.55}
+.st-row .grow{min-width:0}
+.st-amt{display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;text-align:right}
+.st-amt b{font-size:calc(15.5px*var(--fs,1))}
+.st-amt small{font-size:calc(11.5px*var(--fs,1));color:var(--text-3);font-weight:600}
+.st-rank{width:22px;text-align:center;font-weight:750;color:var(--text-3)}
+.st-acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}
+.st-acts .btn{min-height:60px;flex-direction:column;gap:4px;white-space:normal;line-height:1.15;font-size:calc(14px*var(--fs,1))}
+.st-acts .btn[data-sta="sal"]{grid-column:1/-1;flex-direction:row;min-height:56px;font-size:calc(16px*var(--fs,1))}
+@media (min-width:520px){.st-acts{grid-template-columns:repeat(4,minmax(0,1fr))}.st-acts .btn[data-sta="sal"]{grid-column:1/-1}}
+.st-sum{padding:14px 16px}
+.st-amt-in{min-height:60px;font-size:calc(24px*var(--fs,1))!important;font-weight:750;text-align:center;font-variant-numeric:tabular-nums}
+.st-kpis .kpi-hero .hero-split{flex-wrap:wrap;gap:10px 20px}
+#bnavMore.on{color:var(--text)}
+#bnavMore.on::before{content:"";position:absolute;top:0;width:28px;height:3px;border-radius:0 0 3px 3px;background:var(--text)}
+.bottomnav button span{white-space:nowrap;overflow:hidden;text-overflow:clip;max-width:100%}
+
 @media (min-width:1000px){.mobile-only{display:none!important}}
 @media (max-width:999px){.desk-only{display:none!important}}
 </style>
@@ -939,7 +957,7 @@ async function createPinAccount(email, pin){
 const TXM = new Map();      // id -> kayıt (silinenler dahil)
 let liveFrom = null, loadedFrom = null, loadingFrom = null;
 function resetData(){
-  TXM.clear(); S.tx=[]; S.suppliers=[]; S.payments=[]; S.closings=[]; S.people=[]; S.members={}; S.recLast={};
+  TXM.clear(); S.tx=[]; S.suppliers=[]; S.payments=[]; S.closings=[]; S.people=[]; S.members={}; S.recLast={}; S.staff=[]; S.payroll=[];
   liveFrom = loadedFrom = loadingFrom = null;
 }
 function rebuildTx(){ S.tx = Array.from(TXM.values()).filter(x=>!x.deleted); }
@@ -976,6 +994,8 @@ function startListeners(){
   unsubs.push(FB.onSnapshot(C('closings'), opt, s=>{ trackSync(s,'k7'); S.closings = s.docs.map(d=>Object.assign({id:d.id}, d.data())).filter(x=>!x.deleted); scheduleRender(); }, err('Kapanışlar')));
   if(isAdmin()){
     unsubs.push(FB.onSnapshot(FB.query(C('ptx'), FB.where('d','>=',liveFrom)), opt, s=>{ trackSync(s,'k8'); applySnap(s,{sensitive:true}); rebuildTx(); scheduleRender(); }, err('Personel kayıtları')));
+    unsubs.push(FB.onSnapshot(C('staff'), opt, s=>{ trackSync(s,'k10'); S.staff = s.docs.map(d=>Object.assign({id:d.id}, d.data())).filter(x=>!x.deleted); scheduleRender(); }, err('Personel')));
+    unsubs.push(FB.onSnapshot(C('payroll'), opt, s=>{ trackSync(s,'k11'); S.payroll = s.docs.map(d=>Object.assign({id:d.id}, d.data())); scheduleRender(); }, err('Hakediş')));
     unsubs.push(FB.onSnapshot(D('state','main'), opt, s=>{ trackSync(s,'k9'); const d=s.exists()?s.data():{}; S.recLast=d.recLast||{}; S.settings.lastBackup=d.lastBackup||null; scheduleRender(); }, err('Durum')));
   }
   if(ME.owner){
@@ -1734,11 +1754,12 @@ const VIEWS = {
   cari:{t:'Cari', icon:'truck', hash:'cari'},
   reports:{t:'Raporlar', icon:'chart', hash:'raporlar'},
   settings:{t:'Ayarlar', icon:'settings', hash:'ayarlar'},
-  panel:{t:'Yönetici Paneli', icon:'shield', hash:'panel'}
+  panel:{t:'Yönetici Paneli', icon:'shield', hash:'panel'},
+  staff:{t:'Personel', icon:'users', hash:'personel'}
 };
 function navViews(){
   if(ME.mode==='panel') return ['panel'];
-  return ['home','tx', can('closeDay')?'kasa':null, can('seeCari')?'cari':null, can('seeReports')?'reports':null].filter(Boolean);
+  return ['home','tx', can('closeDay')?'kasa':null, isAdmin()?'staff':null, can('seeCari')?'cari':null, can('seeReports')?'reports':null].filter(Boolean);
 }
 function viewAllowed(v){ return ME.mode==='panel' ? v==='panel' : (v==='settings' || navViews().indexOf(v)>-1); }
 
@@ -1751,11 +1772,33 @@ function buildShell(){
   if(ME.mode==='panel') side.querySelector('.side-new').remove();
   const nv = navViews();
   document.body.classList.toggle('no-nav', ME.mode==='panel' || nv.length<2);
-  $('#bnav').style.gridTemplateColumns = 'repeat('+Math.max(1,nv.length)+',1fr)';
-  $('#bnav').innerHTML = nv.map(k=>'<button data-nav="'+k+'" aria-label="'+VIEWS[k].t+'">'+ic(VIEWS[k].icon,23)+'<span>'+VIEWS[k].t+'</span></button>').join('');
+  drawBottomNav();
   $('#fab').innerHTML = ic('plus',28,2.4);
   updateBrand();
 }
+/* Alt çubuk: dar ekranda 5'ten fazla bölüm varsa son ikisi "Daha fazla" menüsüne gider */
+function bottomSplit(){
+  const nv = navViews();
+  const fsMul = ({n:1,l:1.15,xl:1.3})[S.settings.fs||'n']||1;
+  const perBtn = (document.documentElement.clientWidth||innerWidth) / nv.length;
+  if(nv.length<=5 || perBtn >= 74*fsMul) return {main:nv, more:[]};
+  return {main:nv.slice(0,4), more:nv.slice(4)};
+}
+function drawBottomNav(){
+  const b = $('#bnav'); if(!b) return;
+  const sp = bottomSplit(), n = sp.main.length + (sp.more.length?1:0);
+  b.style.gridTemplateColumns = 'repeat('+Math.max(1,n)+',minmax(0,1fr))';
+  b.innerHTML = sp.main.map(k=>'<button data-nav="'+k+'" aria-label="'+VIEWS[k].t+'">'+ic(VIEWS[k].icon,23)+'<span>'+VIEWS[k].t+'</span></button>').join('')+
+    (sp.more.length?'<button id="bnavMore" data-act="navmore" aria-label="Daha fazla: '+sp.more.map(k=>VIEWS[k].t).join(', ')+'">'+ic('more',23)+'<span>Daha fazla</span></button>':'');
+  b._sig = sp.main.join()+'|'+sp.more.join();
+  markMore();
+}
+function markMore(){ const m=$('#bnavMore'); if(!m) return; const sp=bottomSplit(); m.classList.toggle('on', sp.more.indexOf(UI.view)>-1); }
+function openNavMore(){
+  const sp = bottomSplit();
+  openSheet({title:'Daha fazla', noDirty:true, body:'<div class="list">'+sp.more.map(k=>'<button class="li" data-nav="'+k+'"><span class="li-ic">'+ic(VIEWS[k].icon,20)+'</span><div class="grow"><div class="t">'+VIEWS[k].t+'</div></div><span class="chev">'+ic('chevR',18)+'</span></button>').join('')+'</div>'});
+}
+addEventListener('resize',()=>{ const b=$('#bnav'); if(!b||!ME.mode) return; const sp=bottomSplit(); if(b._sig!==sp.main.join()+'|'+sp.more.join()) drawBottomNav(); });
 function updateBrand(){
   const n = S.settings.biz || 'Döner Kasa';
   $('#brandName').textContent = n;
@@ -1796,7 +1839,8 @@ function renderView(){
   if(!ME.mode) return;
   if(!viewAllowed(v)){ UI.view = ME.mode==='panel'?'panel':'home'; return renderView(); }
   document.body.classList.remove('kasa-open'); document.body.dataset.view = UI.view;
-  ({home:renderHome, tx:renderTx, kasa:renderKasa, cari:renderCari, reports:renderReports, settings:renderSettings, panel:renderPanel})[UI.view]();
+  ({home:renderHome, tx:renderTx, kasa:renderKasa, cari:renderCari, reports:renderReports, settings:renderSettings, panel:renderPanel, staff:renderStaff})[UI.view]();
+  markMore();
   if(UI.lastView!==v){ host.classList.remove('view-in'); void host.offsetWidth; host.classList.add('view-in'); UI.lastView=v; }
   countUp(host);
   $('#bulk') && !UI.tx.sel && $('#bulk').remove();
@@ -1837,7 +1881,7 @@ function txRow(x, opt){
   if(x.desc) subParts.push(esc(c.name));
   if(sup) subParts.push(esc(sup.name));
   if(opt.showDate) subParts.unshift(relDay(x.d));
-  const pill = (x.m==='credit' ? '<span class="pill credit">Veresiye</span>' : '') + (x.sensitive?'<span class="pill">Personel</span>':'') + (x.t==='in' && x.rate ? '<span class="pill kom">%'+rateStr(x.rate)+'</span>' : '');
+  const pill = (x.m==='credit' ? '<span class="pill credit">Veresiye</span>' : '') + (x.sensitive && x.c!=='c_per'?'<span class="pill">Personel</span>':'') + (x.t==='in' && x.rate ? '<span class="pill kom">%'+rateStr(x.rate)+'</span>' : '');
   if(x.plat) subParts.unshift(esc(platName(x.plat)));
   const photo = x.ph ? ic('camera',13) : '';
   const sel = UI.tx.sel;
@@ -2731,6 +2775,16 @@ function tableHtml(head, rows, opts){
   return '<div class="tbl-wrap"><table class="tbl"><thead><tr>'+head.map((h,i)=>'<th'+(i&&!opts.leftCols?' class="r"':'')+'>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+
     rows.map(r=>'<tr'+(r.total?' class="total"':'')+'>'+r.cells.map((c,i)=>'<td class="'+(i?'r':'')+(c.cls?' '+c.cls:'')+'">'+(c.html!=null?c.html:esc(c.v))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
 }
+function perCard(from,to){
+  const by = {}; let tot=0;
+  for(const x of S.tx){ if(x.t==='out' && x.d>=from && x.d<=to && (x.c==='c_per'||x.sensitive)){ const k = x.staffId || '_'; by[k]=(by[k]||0)+x.a; tot+=x.a; } }
+  if(!tot) return '';
+  const ciro = sumRange(from,to).i, keys = Object.keys(by).sort((a,b)=>by[b]-by[a]);
+  const nm = k=>{ if(k==='_') return 'Diğer personel kayıtları'; const s=(S.staff||[]).find(z=>z.id===k); return s?s.name:'Silinmiş personel'; };
+  return '<div class="card section"><div class="card-h"><h3>Personel gideri</h3><b class="num" style="color:var(--out)">'+money(tot)+'</b></div>'+
+    '<p class="muted" style="margin:0 0 8px;font-size:calc(13.5px*var(--fs,1))">Cironun '+(ciro?'<b>%'+NF1.format(tot/ciro*100)+'</b>':'—')+'’i</p>'+
+    tableHtml(['Kişi','Tutar','Pay'], keys.map(k=>({cells:[{v:nm(k)},{v:money(by[k])},{v:'%'+NF1.format(by[k]/tot*100)}]})).concat([{total:true,cells:[{v:'Toplam'},{v:money(tot)},{v:'%100'}]}]))+'</div>';
+}
 function komCard(from,to){
   const br = feeBreakdown(from,to), keys = Object.keys(br).sort((a,b)=>br[b]-br[a]); const tot = keys.reduce((a,k)=>a+br[k],0);
   if(!tot) return '';
@@ -2748,15 +2802,18 @@ function reportData(){
   if(R.tab==='month'){
     const y = R.year, m = Array.from({length:12},()=>({i:0,o:0}));
     for(const x of S.tx){ if(+x.d.slice(0,4)===y){ const k=+x.d.slice(5,7)-1; if(x.t==='in') m[k].i+=x.a; else m[k].o+=x.a; } }
-    m.forEach(x=>x.f=0); const fm=feeByDay(y+'-01-01', y+'-12-31'); for(const d in fm) m[+d.slice(5,7)-1].f+=fm[d];
+    m.forEach(x=>{ x.f=0; x.p=0; }); for(const x of S.tx){ if(x.t==='out' && +x.d.slice(0,4)===y && (x.c==='c_per'||x.sensitive)) m[+x.d.slice(5,7)-1].p+=x.a; } const tp=m.reduce((a,b)=>a+b.p,0);
+    const fm=feeByDay(y+'-01-01', y+'-12-31'); for(const d in fm) m[+d.slice(5,7)-1].f+=fm[d];
     const ti=m.reduce((a,b)=>a+b.i,0), to=m.reduce((a,b)=>a+b.o,0), tf=m.reduce((a,b)=>a+b.f,0);
     const head=['Kalem'].concat(MONTHS_S,['Toplam']);
-    const mk=(lbl,fn,cls)=>({cells:[{v:lbl}].concat(m.map(x=>{const v=fn(x); return v==null?{v:'—'}:{v:v.txt, cls:cls?cls(v.raw):''};}),[(()=>{const v=fn({i:ti,o:to,f:tf}); return v==null?{v:'—'}:{v:v.txt,cls:cls?cls(v.raw):''};})()])});
+    const mk=(lbl,fn,cls)=>({cells:[{v:lbl}].concat(m.map(x=>{const v=fn(x); return v==null?{v:'—'}:{v:v.txt, cls:cls?cls(v.raw):''};}),[(()=>{const v=fn({i:ti,o:to,f:tf,p:tp}); return v==null?{v:'—'}:{v:v.txt,cls:cls?cls(v.raw):''};})()])});
     const rows=[mk('Gelir',x=>({txt:x.i?NF0.format(x.i/100):'0',raw:x.i})), mk('Gider',x=>({txt:x.o?NF0.format(x.o/100):'0',raw:x.o})),
+      mk('  içinde personel',x=>({txt:x.p?NF0.format(x.p/100):'0',raw:x.p})),
       mk('Ödenen komisyon',x=>({txt:x.f?'−'+NF0.format(x.f/100):'0',raw:-x.f}),v=>v<0?'neg':''),
       Object.assign(mk('Net kâr',x=>({txt:NF0.format((x.i-x.o-x.f)/100),raw:x.i-x.o-x.f}),v=>v>0?'pos':v<0?'neg':''),{total:true}),
-      mk('Marj',x=>x.i?{txt:'%'+NF0.format((x.i-x.o-x.f)/x.i*100),raw:x.i-x.o-x.f}:null)];
-    const csv=[head].concat([['Gelir',m.map(x=>csvNum(x.i)),csvNum(ti)],['Gider',m.map(x=>csvNum(x.o)),csvNum(to)],['Ödenen komisyon',m.map(x=>csvNum(x.f)),csvNum(tf)],['Net',m.map(x=>csvNum(x.i-x.o-x.f)),csvNum(ti-to-tf)]].map(r=>[r[0]].concat(r[1],[r[2]])));
+      mk('Marj',x=>x.i?{txt:'%'+NF0.format((x.i-x.o-x.f)/x.i*100),raw:x.i-x.o-x.f}:null),
+      mk('Personel / ciro',x=>x.i?{txt:'%'+NF1.format(x.p/x.i*100),raw:0}:null)];
+    const csv=[head].concat([['Gelir',m.map(x=>csvNum(x.i)),csvNum(ti)],['Gider',m.map(x=>csvNum(x.o)),csvNum(to)],['Personel gideri',m.map(x=>csvNum(x.p)),csvNum(tp)],['Ödenen komisyon',m.map(x=>csvNum(x.f)),csvNum(tf)],['Net',m.map(x=>csvNum(x.i-x.o-x.f)),csvNum(ti-to-tf)]].map(r=>[r[0]].concat(r[1],[r[2]])));
     const html='<div class="card"><div class="card-h"><div class="row"><button class="icon-btn no-print" data-ryear="-1" aria-label="Önceki yıl">'+ic('chevL',20)+'</button><h3 style="font-size:calc(20px*var(--fs,1))">'+y+'</h3><button class="icon-btn no-print" data-ryear="1" aria-label="Sonraki yıl">'+ic('chevR',20)+'</button></div>'+
       '<div class="legend"><span><i style="background:var(--in-line)"></i>Gelir</span><span><i style="background:var(--out-line)"></i>Gider</span></div></div><div class="chart-wrap" id="repChart"></div></div>'+
       '<div class="card section"><div class="card-h"><h3>12 aylık özet</h3><span class="muted">Tutarlar ₺, kuruşsuz</span></div>'+tableHtml(head,rows)+'</div>'+
@@ -2772,7 +2829,7 @@ function reportData(){
     const csv=[['Tür','Kategori','İşlem sayısı','Tutar','Pay %']];
     ['out','in'].forEach(t=>{ const d=catRows(t,r.from,r.to); d.list.forEach(e=>csv.push([t==='in'?'Gelir':'Gider',e.c.name,e.n,csvNum(e.v),(e.v/d.total*100).toFixed(1).replace('.',',')])); });
     return {title:'Kategori raporu', range:trDate(r.from)+' – '+trDate(r.to), csv,
-      html:'<div class="no-print">'+periodChips(R.p,'','data-rperiod')+custom+'</div><p class="muted no-print" style="margin:10px 2px 0;font-size:calc(13.5px*var(--fs,1))">'+esc(trDate(r.from)+' – '+trDate(r.to))+'</p>'+block('out','Gider kategorileri')+komCard(r.from,r.to)+block('in','Gelir kategorileri')};
+      html:'<div class="no-print">'+periodChips(R.p,'','data-rperiod')+custom+'</div><p class="muted no-print" style="margin:10px 2px 0;font-size:calc(13.5px*var(--fs,1))">'+esc(trDate(r.from)+' – '+trDate(r.to))+'</p>'+block('out','Gider kategorileri')+perCard(r.from,r.to)+komCard(r.from,r.to)+block('in','Gelir kategorileri')};
   }
   if(R.tab==='cmp'){
     const t=today(); let a, b, la, lb;
@@ -2786,7 +2843,8 @@ function reportData(){
     const pct=(x,y)=>y?((x-y)/Math.abs(y)*100):null;
     const line=(lbl,x,y,goodUp,bold)=>{ const p=pct(x,y), d=x-y; const good = d===0?'':((d>0)===goodUp?'pos':'neg');
       return {total:bold, cells:[{html:lbl},{v:money(x)},{v:money(y)},{v:money(d,{sign:true}),cls:good},{v:p==null?'—':(p>0?'+':p<0?'−':'')+'%'+NF1.format(Math.abs(p)),cls:good}]}; };
-    const rows=[line('<b>Gelir</b>',A.i,B.i,true),line('<b>Gider</b>',A.exp,B.exp,false),line('<b>Ödenen komisyon</b>',A.fee,B.fee,false)];
+    const perOf=(f,t)=>S.tx.reduce((a,x)=>a+(x.t==='out'&&x.d>=f&&x.d<=t&&(x.c==='c_per'||x.sensitive)?x.a:0),0);
+    const rows=[line('<b>Gelir</b>',A.i,B.i,true),line('<b>Gider</b>',A.exp,B.exp,false),line('<span style="padding-left:12px">içinde personel</span>',perOf(a.from,a.to),perOf(b.from,b.to),false),line('<b>Ödenen komisyon</b>',A.fee,B.fee,false)];
     S.cats.slice().sort((x,y)=>(x.t===y.t?x.order-y.order:x.t==='in'?-1:1)).forEach(c=>{ if(ca[c.id]||cb[c.id]) rows.push(line('<span style="padding-left:12px;color:var(--text-2)">'+esc(c.name)+'</span>',ca[c.id]||0,cb[c.id]||0,c.t==='in')); });
     rows.push(line('<b>Net kâr</b>',A.net,B.net,true,true));
     const csv=[['Kalem',la+' ('+trDate(a.from)+'-'+trDate(a.to)+')',lb+' ('+trDate(b.from)+'-'+trDate(b.to)+')','Fark']].concat([['Gelir',A.i,B.i],['Gider',A.exp,B.exp],['Ödenen komisyon',A.fee,B.fee]].concat(S.cats.filter(c=>ca[c.id]||cb[c.id]).map(c=>[c.name,ca[c.id]||0,cb[c.id]||0]),[['Net',A.net,B.net]]).map(r=>[r[0],csvNum(r[1]),csvNum(r[2]),csvNum(r[1]-r[2])]));
@@ -3142,6 +3200,207 @@ function printMonthly(r){
 }
 
 /* =========================================================
+   PERSONEL: liste, hakediş, ödemeler (sadece yönetici)
+   Para verilen her hareket (avans, maaş ödemesi, peşin prim/mesai) tek bir "ptx" kaydıdır:
+   hem personel ödemesi hem de "Personel" kategorisinde giderdir. Böylece çift kayıt olmaz,
+   silme/düzenleme gideri de aynı anda değiştirir.
+   Para verilmeyen hareketler (maaşa eklenecek prim/mesai, kesinti) "payroll" koleksiyonundadır;
+   gider sayılmaz, sadece kalan ödenecek tutarı değiştirir.
+   ========================================================= */
+const ST_KIND = {
+  adv:{t:'Avans', icon:'cash', paid:true},
+  sal:{t:'Maaş ödemesi', icon:'wallet', paid:true},
+  bonus:{t:'Prim', icon:'sparkles'},
+  ot:{t:'Mesai', icon:'clock'},
+  ded:{t:'Kesinti', icon:'minus'}
+};
+UI.st = UI.st || {p:'month', cf:null, ct:null};
+const ST_PERIODS = [['month','Bu ay'],['lastmonth','Geçen ay'],['year','Bu yıl'],['custom','Özel']];
+function staffById(id){ return (S.staff||[]).find(s=>s.id===id) || null; }
+function perCatId(){ return S.cats.some(c=>c.id==='c_per') ? 'c_per' : (catsOf('out')[0]||{id:'c_per'}).id; }
+/* Dönem içindeki maaş hakkı: işe girişten itibaren dönemin kapsadığı her ay için bir aylık maaş */
+function salaryDue(s, from, to){
+  if(!s.salary) return 0;
+  const end = to>today()?today():to;
+  let start = from; if(s.start && s.start>start) start = s.start;
+  if(start>end) return 0;
+  let n=0, m=monthStart(start);
+  while(m<=end){ n++; m=addMonths(m,1); }
+  return n*s.salary;
+}
+function staffMoves(id, from, to){
+  const pays = S.tx.filter(x=>x.staffId===id && x.d>=from && x.d<=to);
+  const acc = (S.payroll||[]).filter(x=>x.staffId===id && !x.deleted && x.d>=from && x.d<=to);
+  return {pays, acc};
+}
+function staffStats(s, from, to){
+  const {pays, acc} = staffMoves(s.id, from, to);
+  const r = {salaryDue:salaryDue(s,from,to), adv:0, sal:0, bonusPaid:0, otPaid:0, bonusAcc:0, otAcc:0, ded:0, given:0};
+  pays.forEach(x=>{ r.given+=x.a; if(x.kind==='adv') r.adv+=x.a; else if(x.kind==='sal') r.sal+=x.a; else if(x.kind==='bonus') r.bonusPaid+=x.a; else if(x.kind==='ot') r.otPaid+=x.a; else r.adv+=x.a; });
+  acc.forEach(x=>{ if(x.kind==='bonus') r.bonusAcc+=x.a; else if(x.kind==='ot') r.otAcc+=x.a; else if(x.kind==='ded') r.ded+=x.a; });
+  r.bonus = r.bonusPaid+r.bonusAcc; r.ot = r.otPaid+r.otAcc;
+  r.earned = r.salaryDue + r.bonus + r.ot - r.ded;
+  r.remaining = r.earned - r.given;
+  r.pct = r.earned>0 ? Math.min(100, Math.max(0, r.given/r.earned*100)) : (r.given>0?100:0);
+  return r;
+}
+
+/* ---------- Ana ekran ---------- */
+function renderStaff(){
+  const st = UI.st, r = getRange(st.p, st.cf, st.ct);
+  setTop(VIEWS.staff.t, esc(rangeLabel(st.p, r)), '<button class="btn btn-primary btn-sm" data-act="newstaff">'+ic('plus',18,2.4)+' Ekle</button>');
+  const list = (S.staff||[]).slice().sort((a,b)=>(b.active!==false)-(a.active!==false) || a.name.localeCompare(b.name,'tr'));
+  let html = '<div class="chips no-print" role="tablist">'+ST_PERIODS.map(p=>'<button class="chip'+(st.p===p[0]?' on':'')+'" data-stp="'+p[0]+'">'+(p[0]==='custom'?ic('calendar',16):'')+p[1]+'</button>').join('')+'</div>'+loadingNote(r.from);
+  if(!list.length){
+    html += '<div class="card empty section">'+emptyArt()+'<h3>Personel ekle</h3><p>Ustanı, kasiyerini, kuryeni ekle. Avans, maaş, prim ve mesaiyi tek dokunuşla gir; hepsi otomatik olarak gider sayılır.</p><div class="hstack-wrap"><button class="btn btn-primary btn-lg" data-act="newstaff">'+ic('plus',19,2.4)+' Personel ekle</button></div></div>';
+    $('#view').innerHTML = html; return;
+  }
+  const rows = list.map(s=>({s, k:staffStats(s, r.from, r.to)}));
+  const act = rows.filter(x=>x.s.active!==false || x.k.given>0);
+  const T = act.reduce((a,x)=>{ a.given+=x.k.given; a.sal+=x.k.sal; a.adv+=x.k.adv; a.bo+=x.k.bonusPaid+x.k.otPaid; if(x.s.active!==false) a.rem+=Math.max(0,x.k.remaining); return a; },{given:0,sal:0,adv:0,bo:0,rem:0});
+  const ciro = sumRange(r.from, r.to).i;
+  html += '<div class="kpis section st-kpis">'+
+    '<div class="kpi kpi-hero"><div class="kpi-label">Toplam Verilen Para</div><div class="kpi-val num" data-count="'+T.given+'" data-key="st-given">'+money(T.given)+'</div>'+
+      '<div class="hero-split"><div>Cironun<b>'+(ciro?'%'+NF1.format(T.given/ciro*100):'—')+'</b></div><div>Ödenecek kalan<b>'+money(T.rem,{round:true})+'</b></div></div></div>'+
+    '<div class="kpi"><div class="kpi-label">Toplam Maaş</div><div class="kpi-val num">'+money(T.sal,{round:true})+'</div></div>'+
+    '<div class="kpi"><div class="kpi-label">Toplam Avans</div><div class="kpi-val num">'+money(T.adv,{round:true})+'</div></div>'+
+    '<div class="kpi"><div class="kpi-label">Prim / Mesai</div><div class="kpi-val num">'+money(T.bo,{round:true})+'</div></div>'+
+    '<div class="kpi"><div class="kpi-label"><i class="dot" style="background:var(--warn-line)"></i>Ödenecek Kalan</div><div class="kpi-val num" style="color:var(--warn)">'+money(T.rem,{round:true})+'</div></div></div>';
+  html += '<div class="card section" style="padding:4px 16px"><div class="list">'+rows.map(({s,k})=>{
+    const off = s.active===false;
+    return '<button class="li st-row'+(off?' off':'')+'" data-staff="'+s.id+'">'+avatar({name:s.name,color:s.color||'#64748b'},42)+
+      '<div class="grow"><div class="t">'+esc(s.name)+(off?' <span class="pill">Pasif</span>':'')+'</div><div class="s">'+esc(s.role||'Personel')+(s.salary?' · Maaş '+money(s.salary,{round:true}):'')+'</div>'+
+      (k.earned>0?'<div class="progress" style="margin-top:6px" aria-label="Maaşın yüzde '+Math.round(k.pct)+' ödendi"><i style="width:'+k.pct+'%"></i></div>':'')+'</div>'+
+      '<div class="st-amt"><b class="num">'+money(k.given,{round:true})+'</b><small>verildi</small>'+(k.remaining>0?'<small style="color:var(--warn);font-weight:700">Kalan '+money(k.remaining,{round:true})+'</small>':k.remaining<0?'<small style="color:var(--out);font-weight:700">Fazla '+money(-k.remaining,{round:true})+'</small>':'')+'</div></button>';
+  }).join('')+'</div></div>';
+  const ranked = rows.filter(x=>x.k.given>0).sort((a,b)=>b.k.given-a.k.given);
+  html += '<div class="card section"><div class="card-h"><h3>'+(st.p==='month'?'Bu ay':'Bu dönem')+' kime ne kadar verildi</h3></div>'+
+    (ranked.length ? ranked.map((x,i)=>'<div class="who-row"><span class="st-rank">'+(i+1)+'</span>'+avatar({name:x.s.name,color:x.s.color||'#64748b'},28)+'<span class="grow">'+esc(x.s.name)+'</span><b class="num">'+money(x.k.given)+'</b></div>').join('')
+      : '<p class="muted" style="margin:0">Bu dönemde personele ödeme yok.</p>')+'</div>';
+  $('#view').innerHTML = html;
+}
+
+/* ---------- Kişi detayı ---------- */
+function staffHistoryRow(x, isPay){
+  const k = ST_KIND[x.kind] || ST_KIND.adv, by = personById(x.byPid) || {name:x.byName||'?', color:'#94a3b8'};
+  const minus = isPay || x.kind==='ded';
+  const label = k.t + (isPay && (x.kind==='bonus'||x.kind==='ot') ? ' (peşin ödendi)' : (!isPay && x.kind!=='ded' ? ' (maaşa eklendi)' : ''));
+  return '<button class="tx" style="--by:'+personColor(x.byPid)+'" data-stx="'+x.id+'" data-src="'+(isPay?'pay':'acc')+'">'+
+    '<span class="tx-ic" style="background:'+(minus?'var(--out-bg)':'var(--in-bg)')+';color:'+(minus?'var(--out)':'var(--in)')+'">'+ic(k.icon,18)+'</span>'+
+    '<span class="tx-main"><span class="tx-title">'+esc(label)+'</span><span class="tx-sub">'+byLine(x)+'<span>'+esc(trDate(x.d))+(isPay?' · '+(METHOD_SHORT[x.m]||''):'')+(x.note?' · '+esc(x.note):'')+'</span></span></span>'+
+    '<span class="tx-amt '+(isPay?'out':(x.kind==='ded'?'out':'in'))+'">'+(isPay?'−':(x.kind==='ded'?'−':'+'))+money(x.a)+'<small>'+(isPay?'Gider':'Hakediş')+'</small></span></button>';
+}
+function openStaff(id){
+  const s = staffById(id); if(!s) return;
+  const st = UI.st, r = getRange(st.p, st.cf, st.ct), k = staffStats(s, r.from, r.to);
+  const all = S.tx.filter(x=>x.staffId===id).map(x=>({x, pay:true})).concat((S.payroll||[]).filter(x=>x.staffId===id && !x.deleted).map(x=>({x, pay:false})))
+    .sort((a,b)=>a.x.d<b.x.d?1:a.x.d>b.x.d?-1:(b.x.ts||0)-(a.x.ts||0)).slice(0,120);
+  const neg = v=>v?'−'+money(v):money(0);
+  const line = (l,v,cls)=>'<div class="ds-row '+(cls||'')+'"><span>'+l+'</span><span class="num">'+v+'</span></div>';
+  const body = '<div class="row" style="gap:12px;margin-bottom:6px">'+avatar({name:s.name,color:s.color||'#64748b'},52)+'<div class="grow" style="flex:1;min-width:0"><div style="font-weight:750;font-size:calc(18px*var(--fs,1))">'+esc(s.name)+'</div><div class="muted" style="font-size:calc(13.5px*var(--fs,1))">'+esc(s.role||'Personel')+(s.start?' · Giriş '+esc(trDate(s.start)):'')+(s.phone?' · '+esc(s.phone):'')+'</div></div></div>'+
+    '<div class="daysum st-sum"><div class="muted" style="font-size:calc(12.5px*var(--fs,1));margin-bottom:4px">'+esc(rangeLabel(st.p,r))+'</div>'+
+      line('Maaş', money(k.salaryDue))+line('+ Prim', money(k.bonus))+line('+ Mesai', money(k.ot))+line('− Kesinti', neg(k.ded),'minus')+
+      line('= Hakediş', '<b>'+money(k.earned)+'</b>','eq')+line('− Avans', neg(k.adv),'minus')+line('− Maaş ödemesi', neg(k.sal),'minus')+
+      (k.bonusPaid+k.otPaid?line('− Peşin ödenen prim/mesai', neg(k.bonusPaid+k.otPaid),'minus'):'')+
+      '<div class="ds-total '+(k.remaining>=0?'pos':'neg')+'" style="'+(k.remaining>0?'background:var(--warn-bg);color:var(--warn)':'')+'"><span>'+(k.remaining>=0?'KALAN ÖDENECEK':'FAZLA ÖDENDİ')+'</span><b class="num">'+money(Math.abs(k.remaining))+'</b></div></div>'+
+    '<div class="st-acts">'+[['sal','Maaş Öde','wallet'],['adv','Avans Ver','cash'],['bonus','Prim Ekle','sparkles'],['ot','Mesai Ekle','clock'],['ded','Kesinti Ekle','minus']].map(a=>'<button class="btn '+(a[0]==='sal'?'btn-primary':'btn-secondary')+'" data-sta="'+a[0]+'">'+ic(a[2],20)+'<span>'+a[1]+'</span></button>').join('')+'</div>'+
+    '<div class="card-h" style="margin:20px 0 4px"><h3>Hareketler</h3><span class="muted">'+all.length+'</span></div>'+
+    (all.length ? all.map(o=>staffHistoryRow(o.x,o.pay)).join('') : '<p class="muted">Henüz hareket yok.</p>')+
+    (loadedFrom?'<p class="muted" style="font-size:calc(12.5px*var(--fs,1));margin:10px 0 0">'+esc(trDate(loadedFrom))+' sonrası ödemeler gösteriliyor. Daha eskiler için dönem olarak “Bu yıl” ya da “Özel” seç.</p>':'');
+  const sh = openSheet({title:s.name, noDirty:true, body, headRight:'<button class="icon-btn" data-ste="1" aria-label="Personeli düzenle">'+ic('edit',20)+'</button>'});
+  sh.el.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.sta){ sh.close(true); openStaffEntry(id, b.dataset.sta); }
+    else if(b.dataset.ste){ sh.close(true); editStaff(id); }
+    else if(b.dataset.stx){ const src=b.dataset.src; const rec = src==='pay' ? S.tx.find(x=>x.id===b.dataset.stx) : S.payroll.find(x=>x.id===b.dataset.stx); if(rec){ sh.close(true); openStaffEntry(id, rec.kind, rec, src); } }
+  });
+}
+
+/* ---------- Hareket girişi / düzenleme ---------- */
+function openStaffEntry(staffId, kind, rec, src){
+  const s = staffById(staffId); if(!s) return;
+  const K = ST_KIND[kind] || ST_KIND.adv, editing = !!rec;
+  const r = getRange(UI.st.p, UI.st.cf, UI.st.ct), k = staffStats(s, r.from, r.to);
+  let paid = editing ? src==='pay' : !!K.paid, m = (rec&&rec.m) || 'cash';
+  const canChoose = kind==='bonus' || kind==='ot';
+  const defAmt = editing ? rec.a : (kind==='sal' ? Math.max(0,k.remaining) : 0);
+  const hint = {adv:'Personele verilen avans. Gider olarak işlenir, maaştan düşer.', sal:'Maaş ödemesi. Gider olarak işlenir.', bonus:'Prim', ot:'Mesai ücreti', ded:'Kesinti para çıkışı değildir; kalan ödenecek tutarı azaltır.'}[kind];
+  const body = ()=>'<p class="muted" style="margin:0 0 12px;font-size:calc(14px*var(--fs,1))">'+esc(hint)+(kind==='sal'&&!editing&&k.remaining>0?' Kalan: <b>'+money(k.remaining)+'</b>':'')+'</p>'+
+    '<div class="field"><label for="seA">Tutar (₺)</label><input class="input st-amt-in" id="seA" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(defAmt)+'" autocomplete="off"></div>'+
+    (canChoose && !editing ? '<div class="form-sec"><span class="label">Ödeme</span><div class="seg"><button type="button" class="'+(paid?'on':'')+'" data-sep="1">Şimdi ödendi</button><button type="button" class="'+(!paid?'on':'')+'" data-sep="0">Maaşa eklensin</button></div><p class="muted" style="font-size:calc(12.5px*var(--fs,1));margin:6px 0 0">'+(paid?'Para şimdi verildi: gider olarak işlenir.':'Para şimdi verilmedi: maaş ödenirken verilecek, kalan tutara eklenir.')+'</p></div>' : '')+
+    (paid ? '<div class="form-sec"><span class="label">Ödeme yöntemi</span><div class="seg">'+['cash','bank','card'].map(x=>'<button type="button" class="'+(m===x?'on':'')+'" data-sem="'+x+'">'+ic(METHOD_ICON[x],17)+METHOD_SHORT[x]+'</button>').join('')+'</div></div>' : '')+
+    '<div class="form-sec"><span class="label">Tarih</span><div class="row" style="flex-wrap:wrap"><div class="chips" style="flex:0 0 auto"><button type="button" class="chip" data-sed="0">Bugün</button><button type="button" class="chip" data-sed="1">Dün</button></div><input class="input" type="date" id="seD" value="'+((rec&&rec.d)||today())+'" style="flex:1;min-width:150px" aria-label="Tarih"></div></div>'+
+    '<div class="form-sec"><div class="field"><label for="seN">Not <span class="muted">(isteğe bağlı)</span></label><input class="input" id="seN" maxlength="120" value="'+esc((rec&&rec.note)||'')+'" placeholder="Örn: Hafta sonu mesaisi"></div></div>'+
+    (editing?'<button class="btn btn-ghost btn-block" style="margin-top:16px;color:var(--out)" data-sedel="1">'+ic('trash',18)+' Bu hareketi sil</button>':'');
+  const sh = openSheet({title:s.name+' · '+K.t+(editing?' (düzenle)':''), body:body(), foot:'<button class="btn btn-primary btn-lg" data-sesave="1">'+ic('check',20,2.4)+' Kaydet</button>', focus:'#seA'});
+  const sb = sh.el.querySelector('.sheet-b');
+  const keep = ()=>({a:$('#seA',sh.el).value, d:$('#seD',sh.el).value, n:$('#seN',sh.el).value});
+  const redraw = ()=>{ const v=keep(); sb.innerHTML=body(); $('#seA',sh.el).value=v.a; $('#seD',sh.el).value=v.d; $('#seN',sh.el).value=v.n; };
+  sh.el.addEventListener('click', async e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.sep){ paid = b.dataset.sep==='1'; redraw(); }
+    else if(b.dataset.sem){ m=b.dataset.sem; redraw(); }
+    else if(b.dataset.sed){ $('#seD',sh.el).value = addDays(today(),-(+b.dataset.sed)); }
+    else if(b.dataset.sedel){
+      if(!(await confirmDialog({title:'Hareket silinsin mi?', text:esc(K.t)+' · '+money(rec.a)+(src==='pay'?'<br>İlgili gider kaydı da silinir. Silinenler listesinden geri yükleyebilirsin.':''), ok:'Sil', danger:true}))) return;
+      if(src==='pay') dbSoftDelete([rec.id]);
+      else { rec.deleted=true; dbUpd('payroll', rec.id, {deleted:true, deletedBy:ME.name, deletedTs:Date.now()}, 'Silme'); audit('sil','hakediş',rec.id,rec,null); }
+      sh.close(true); renderView(); openStaff(staffId); toast('Silindi','info');
+    }
+    else if(b.dataset.sesave){
+      const a = parseMoney($('#seA',sh.el).value), d = $('#seD',sh.el).value || today(), note = $('#seN',sh.el).value.trim();
+      if(isNaN(a) || a<=0){ toast('Geçerli bir tutar yaz','error'); $('#seA',sh.el).focus(); return; }
+      if(a>=100000000){ toast('Tutar çok yüksek görünüyor','error'); return; }
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){ toast('Tarih geçersiz','error'); return; }
+      if(editing){
+        if(src==='pay') dbUpdateTx(rec.id, {a, d, m, note, desc:s.name+' · '+K.t});
+        else { const before=Object.assign({},rec); Object.assign(rec,{a,d,note}); dbUpd('payroll', rec.id, {a, d, note, editedBy:ME.name, editedTs:Date.now()}, 'Düzenleme'); audit('düzenle','hakediş',rec.id,before,rec); }
+      } else if(paid){
+        dbAddTx({t:'out', a, c:perCatId(), m, d, desc:s.name+' · '+K.t, note, sup:null, sensitive:true, staffId, kind});
+      } else {
+        const p = dbAdd('payroll', {staffId, kind, a, d, note, deleted:false}, 'Hakediş');
+        S.payroll = (S.payroll||[]).concat([p]); audit('ekle','hakediş',p.id,null,p);
+      }
+      sh.close(true); renderView(); openStaff(staffId);
+      toast(K.t+' kaydedildi · '+money(a)+(paid&&!editing?' · gider olarak işlendi':''),'success');
+    }
+  });
+}
+
+/* ---------- Personel ekle / düzenle ---------- */
+function editStaff(id){
+  const s = id ? staffById(id) : null;
+  const used = (S.staff||[]).map(x=>x.color);
+  const T = {color:s?s.color:(USER_COLORS.find(c=>used.indexOf(c)<0)||USER_COLORS[0]), active:s?s.active!==false:true};
+  const body = ()=>'<div class="field"><label for="sfN">Ad soyad</label><input class="input" id="sfN" maxlength="40" value="'+esc(s?s.name:'')+'" placeholder="Örn: Ahmet Usta"></div>'+
+    '<div class="form-sec"><div class="field"><label for="sfR">Görevi</label><input class="input" id="sfR" maxlength="30" list="sfRoles" value="'+esc(s&&s.role||'')+'" placeholder="Usta, kasa, kurye, paketçi…"><datalist id="sfRoles"><option value="Usta"><option value="Döner ustası"><option value="Kasa"><option value="Kurye"><option value="Paketçi"><option value="Komi"><option value="Bulaşıkçı"></datalist></div></div>'+
+    '<div class="form-sec two"><div class="field"><label for="sfS">Aylık maaş (₺)</label><input class="input" id="sfS" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(s&&s.salary)+'"></div><div class="field"><label for="sfD">İşe giriş</label><input class="input" type="date" id="sfD" value="'+esc(s&&s.start||'')+'"></div></div>'+
+    '<div class="form-sec"><div class="field"><label for="sfP">Telefon <span class="muted">(isteğe bağlı)</span></label><input class="input" id="sfP" type="tel" inputmode="tel" maxlength="20" value="'+esc(s&&s.phone||'')+'"></div></div>'+
+    '<div class="form-sec"><div class="field"><label for="sfO">Not <span class="muted">(isteğe bağlı)</span></label><input class="input" id="sfO" maxlength="160" value="'+esc(s&&s.note||'')+'"></div></div>'+
+    '<div class="form-sec"><span class="label">Renk</span>'+swatchPick(T.color)+'</div>'+
+    (s?'<div class="form-sec"><button type="button" class="perm" data-sfa="1" role="switch" aria-checked="'+T.active+'"><div class="grow"><div style="font-weight:650">Aktif</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">Pasif personel listede soluk görünür, kalan ödenecek toplamına girmez</div></div><span class="switch'+(T.active?' on':'')+'"></span></button></div>':'');
+  const sh = openSheet({title:s?'Personeli düzenle':'Yeni personel', body:body(), foot:'<button class="btn btn-primary btn-lg" data-sfsave="1">Kaydet</button>', focus:s?null:'#sfN'});
+  sh.el.addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.ucol){ T.color=b.dataset.ucol; $$('[data-ucol]',sh.el).forEach(x=>{ const on=x.dataset.ucol===T.color; x.classList.toggle('on',on); x.innerHTML=on?ic('check',18,3):''; }); }
+    else if(b.dataset.sfa){ T.active=!T.active; b.setAttribute('aria-checked',T.active); b.querySelector('.switch').classList.toggle('on',T.active); }
+    else if(b.dataset.sfsave){
+      const name=$('#sfN',sh.el).value.trim(), sal=$('#sfS',sh.el).value.trim();
+      if(!name){ toast('Ad yaz','error'); return; }
+      const salary = sal ? parseMoney(sal) : 0; if(isNaN(salary)||salary<0){ toast('Maaş tutarı geçersiz','error'); return; }
+      const data = {name, role:$('#sfR',sh.el).value.trim(), salary, start:$('#sfD',sh.el).value||'', phone:$('#sfP',sh.el).value.trim(), note:$('#sfO',sh.el).value.trim(), color:T.color, active:T.active, deleted:false};
+      const sid = id || ('st_'+randId(8));
+      const before = s ? Object.assign({},s) : null;
+      if(s) Object.assign(s, data); else S.staff = (S.staff||[]).concat([Object.assign({id:sid}, data)]);
+      dbSet(['staff',sid], Object.assign({}, data, s?{editedBy:ME.name, editedTs:Date.now()}:{byUid:ME.uid, byPid:ME.pid, byName:ME.name, ts:Date.now()}), true, 'Personel').catch(()=>{});
+      audit(s?'personel güncellendi':'personel eklendi','personel',sid,before,data);
+      sh.close(true); renderView(); if(s) openStaff(sid);
+      toast(s?'Kaydedildi':name+' eklendi','success');
+    }
+  });
+}
+
+/* =========================================================
    YÖNETİCİ PANELİ (Parça 1): kullanıcılar, davet, işletme, kategoriler
    ========================================================= */
 const PERMS = [
@@ -3337,8 +3596,8 @@ async function openTrash(){
   const sh = openSheet({title:'Silinenler', noDirty:true, body:'<p class="muted" id="trInfo" style="margin:0 0 10px">Yükleniyor…</p><div id="trList"></div>'});
   let items = [];
   try{
-    const rs = await Promise.all([FB.getDocs(FB.query(C('tx'), FB.where('deleted','==',true))), FB.getDocs(FB.query(C('ptx'), FB.where('deleted','==',true)))]);
-    rs.forEach((r,i)=>r.docs.forEach(d=>items.push(Object.assign({id:d.id}, d.data(), i?{sensitive:true}:{}))));
+    const rs = await Promise.all([FB.getDocs(FB.query(C('tx'), FB.where('deleted','==',true))), FB.getDocs(FB.query(C('ptx'), FB.where('deleted','==',true))), FB.getDocs(FB.query(C('payroll'), FB.where('deleted','==',true)))]);
+    rs.forEach((r,i)=>r.docs.forEach(d=>{ const o=Object.assign({id:d.id}, d.data(), i===1?{sensitive:true}:{}); if(i===2){ const s=staffById(o.staffId); o._acc=true; o.t=o.kind==='ded'?'out':'in'; o.c='c_per'; o.desc=(s?s.name:'Personel')+' · '+((ST_KIND[o.kind]||{}).t||'Hakediş')+' (hakediş)'; } items.push(o); }));
   }catch(e){ $('#trInfo',sh.el).textContent='Liste alınamadı (internet gerekli).'; return; }
   const draw = ()=>{
     items = items.filter(x=>x.deleted);
@@ -3355,8 +3614,9 @@ async function openTrash(){
   sh.el.addEventListener('click',e=>{
     const b = e.target.closest('[data-restore]'); if(!b) return;
     const x = items.find(i=>i.id===b.dataset.restore); if(!x) return;
-    if(!TXM.has(x.id)) TXM.set(x.id, Object.assign({}, x));
-    dbRestore([x.id]); x.deleted=false; draw(); renderView();
+    if(x._acc){ const pr=(S.payroll||[]).find(z=>z.id===x.id); if(pr) pr.deleted=false; dbUpd('payroll', x.id, {deleted:false}, 'Geri alma'); audit('geri al','hakediş',x.id,null,null); }
+    else { if(!TXM.has(x.id)) TXM.set(x.id, Object.assign({}, x)); dbRestore([x.id]); }
+    x.deleted=false; draw(); renderView();
     toast('Geri yüklendi · '+money(x.a)+' tekrar toplamlarda','success');
   });
 }
@@ -3697,7 +3957,7 @@ function openCustomRange(cur, apply){
 const ACTIONS = {
   new:()=>openForm(),
   theme:()=>{ S.settings.theme = isDark()?'light':'dark'; save(); applyTheme(); renderView(); redrawCharts(); },
-  csv:exportCSV, tour:showTour, platforms:openPlatforms,
+  csv:exportCSV, tour:showTour, navmore:openNavMore, newstaff:()=>editStaff(null), platforms:openPlatforms,
   cats:()=>openCats('out'), budgets:openBudgets, recurring:openRecurring,
   memenu:openMeMenu, switchuser:()=>switchUser(), changepin:openChangePin, panel:openPanelLogin,
   adduser:()=>editUser(null), ownerpw:openOwnerPassword, owneremail:openOwnerEmail, trash:openTrash,
@@ -3749,6 +4009,8 @@ document.addEventListener('click',e=>{
   if((b=t.closest('[data-skiprec]'))){ addRecurring(b.dataset.skiprec,true); return; }
   if((b=t.closest('[data-sup]'))){ openSupplier(b.dataset.sup); return; }
   if((b=t.closest('[data-user]'))){ editUser(b.dataset.user); return; }
+  if((b=t.closest('[data-staff]'))){ openStaff(b.dataset.staff); return; }
+  if((b=t.closest('[data-stp]'))){ const p=b.dataset.stp; if(p==='custom') openCustomRange(UI.st,(a,z)=>{ Object.assign(UI.st,{p:'custom',cf:a,ct:z}); renderStaff(); }); else { UI.st.p=p; renderStaff(); } return; }
   if((b=t.closest('[data-kday]'))){ const d=addDays(UI.kasaDate||today(),+b.dataset.kday); if(d<=today()){ UI.kasaDate=d; renderKasa(); } return; }
   if((b=t.closest('[data-kgo]'))){ UI.kasaDate=b.dataset.kgo; renderKasa(); window.scrollTo({top:0,behavior:'smooth'}); return; }
   if((b=t.closest('[data-rtab]'))){ UI.rep.tab=b.dataset.rtab; renderReports(); return; }
@@ -3757,7 +4019,7 @@ document.addEventListener('click',e=>{
   if((b=t.closest('[data-rcmp]'))){ UI.rep.cmp=b.dataset.rcmp; renderReports(); return; }
   if((b=t.closest('[data-rwd]'))){ UI.rep.wd=b.dataset.rwd; renderReports(); return; }
   if((b=t.closest('[data-cur]'))){ setConfig({cur:b.dataset.cur},'Para birimi'); renderView(); return; }
-  if((b=t.closest('[data-fs-set]'))){ S.settings.fs=b.dataset.fsSet; save(); applyFont(); renderView(); redrawCharts(); toast('Yazı boyutu: '+b.textContent.replace(/^A/,'').trim(),'success'); return; }
+  if((b=t.closest('[data-fs-set]'))){ S.settings.fs=b.dataset.fsSet; save(); applyFont(); drawBottomNav(); renderView(); redrawCharts(); toast('Yazı boyutu: '+b.textContent.replace(/^A/,'').trim(),'success'); return; }
   if((b=t.closest('[data-theme-set]'))){ S.settings.theme=b.dataset.themeSet; save(); applyTheme(); renderView(); return; }
 });
 document.addEventListener('change',e=>{
