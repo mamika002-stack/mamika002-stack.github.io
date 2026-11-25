@@ -780,8 +780,20 @@ html[data-fs="xl"] .cat-grid{grid-template-columns:repeat(auto-fill,minmax(104px
    FIREBASE KATMANI: yükleme, oturum, canlı veri, yazma, denetim
    ========================================================= */
 const FBV = '10.12.2';
-const LS = {cfg:'dk2_fbcfg', shop:'dk2_shop', roster:'dk2_roster', prefs:'dk2_prefs', pinh:'dk2_pinh', owner:'dk2_owner_email', toured:'dk2_toured', ownerPending:'dk2_owner_pending'};
+const LS = {cfg:'dk2_fbcfg', shop:'dk2_shop', roster:'dk2_roster', prefs:'dk2_prefs', pinh:'dk2_pinh', owner:'dk2_owner_email', toured:'dk2_toured', ownerPending:'dk2_owner_pending', cfgEdit:'dk2_cfg_edit'};
 let FB = null, fbApp = null, auth = null, fs = null, SHOP = null;
+/* Gömülü Firebase ayarı: kurulum ekranı çıkmaz. Panelden "Firebase ayarlarını değiştir" ile başka proje girilirse o kullanılır. */
+const EMBED_CFG = {
+  apiKey: "AIzaSyCisg_2bQSxe0ewyH-bpMB6rm_0j7nF-tY",
+  authDomain: "cengiz-2d8bc.firebaseapp.com",
+  projectId: "cengiz-2d8bc",
+  storageBucket: "cengiz-2d8bc.firebasestorage.app",
+  messagingSenderId: "916641988857",
+  appId: "1:916641988857:web:50828f221d3c6e50402228",
+  measurementId: "G-RC0591BR6M"
+};
+function activeCfg(){ const c = lsGet(LS.cfg); return (c && c.apiKey && c.projectId) ? c : EMBED_CFG; }
+function usingEmbedded(){ return activeCfg()===EMBED_CFG || activeCfg().projectId===EMBED_CFG.projectId; }
 const ME = {uid:null, pid:null, name:'', color:'#64748b', role:null, perms:{}, owner:false, mode:null}; // mode: 'app' | 'panel'
 const SYNC = {pending:false, fromCache:true, online:navigator.onLine, err:null, pw:{}};
 let unsubs = [];
@@ -818,9 +830,9 @@ function parseConfig(text){
 }
 function b64e(o){ return btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 function b64d(s){ s=s.replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; return JSON.parse(decodeURIComponent(escape(atob(s)))); }
-function inviteLink(){ return location.href.split('#')[0] + '#katil=' + b64e({c:lsGet(LS.cfg), s:SHOP}); }
+function inviteLink(){ return location.href.split('#')[0] + '#katil=' + b64e(usingEmbedded()?{s:SHOP}:{c:activeCfg(), s:SHOP}); }
 function randId(n){ const a='abcdefghijkmnpqrstuvwxyz23456789'; const r=crypto.getRandomValues(new Uint8Array(n)); let s=''; r.forEach(x=>s+=a[x%a.length]); return s; }
-function pinEmail(pid, ver){ return ('p'+pid+'v'+(ver||1)+'@'+(lsGet(LS.cfg)||{}).projectId+'.firebaseapp.com').toLowerCase(); }
+function pinEmail(pid, ver){ return ('p'+pid+'v'+(ver||1)+'@'+activeCfg().projectId+'.firebaseapp.com').toLowerCase(); }
 
 /* ---------- yollar ---------- */
 const D = (...p)=>FB.doc(fs,'shops',SHOP,...p);
@@ -834,6 +846,21 @@ function fire(p, what){
     else toast((what||'İşlem')+' kaydedilemedi: '+(e.message||code),'error',{duration:6000});
     throw e;
   });
+}
+
+/* ---------- Dükkan işaretçisi: cihazda dükkan kodu yoksa (ör. ana ekran uygulaması) buradan bulunur ---------- */
+async function findShopPointer(){
+  try{ const s = await FB.getDoc(FB.doc(fs,'meta','shop')); if(s.exists() && s.data().shopId) return s.data().shopId; return null; }
+  catch(e){ return undefined; }   // undefined = okunamadı (kurallar güncel değil veya internet yok)
+}
+async function claimShopPointer(){
+  try{
+    if(!auth.currentUser || !SHOP) return;
+    const s = await FB.getDoc(FB.doc(fs,'meta','shop')).catch(()=>null);
+    if(s && s.exists() && s.data().shopId===SHOP) return;
+    if(s && s.exists() && s.data().owner && s.data().owner!==auth.currentUser.uid) return;
+    await FB.setDoc(FB.doc(fs,'meta','shop'), {shopId:SHOP, owner:auth.currentUser.uid, ts:Date.now()});
+  }catch(e){ console.warn('meta/shop', e && e.code); }
 }
 
 /* ---------- PIN yerel doğrulama (kilit açmak için, internetsiz) ---------- */
@@ -879,6 +906,7 @@ async function ownerSignIn(email, pw){
   if(!o.exists() || (SHOP && o.data().shopId!==SHOP)){ await FB.signOut(auth); throw {code:'local/notowner'}; }
   SHOP = o.data().shopId; lsSet(LS.shop, SHOP); lsSet(LS.owner, email); if((lsGet(LS.ownerPending,'')||'').toLowerCase()===email.toLowerCase()) lsDel(LS.ownerPending);
   Object.assign(ME, {uid:cred.user.uid, pid:'owner', role:'admin', perms:{}, owner:true, name:'Yönetici', color:'#15161a', mode:'panel'});
+  claimShopPointer();
 }
 async function logout(){
   stopListeners();
@@ -897,7 +925,7 @@ function canEditTx(x){
 
 /* ---------- ikincil uygulama ile PIN hesabı açma (yönetici oturumu düşmesin) ---------- */
 async function createPinAccount(email, pin){
-  const sec = FB.initializeApp(lsGet(LS.cfg), 'sec'+Date.now());
+  const sec = FB.initializeApp(activeCfg(), 'sec'+Date.now());
   try{
     let sa; try{ sa = FB.initializeAuth(sec,{persistence:FB.inMemoryPersistence}); }catch(e){ sa = FB.getAuth(sec); }
     const cred = await FB.createUserWithEmailAndPassword(sa, email, pin);
@@ -3153,7 +3181,7 @@ function renderPanel(){
     li('cats','tag','Kategoriler',S.cats.length+' kategori · ekle, yeniden adlandır, sil, sırala, ikon ve renk')+
     li('recurring','repeat','Tekrarlayan giderler',S.recurring.length?S.recurring.length+' kalem · her ay yöneticilere hatırlatılır':'Kira, elektrik, maaş gibi')+
     li('budgets','target','Aylık bütçe limitleri',catsOf('out').filter(c=>c.budget>0).length+' kategoride limit var')+'</div></div>'+
-  '<div class="set-group"><h3>Bu cihaz</h3><div class="set-card">'+li('resetdevice','alert','Bu cihazı dükkandan ayır','Firebase ayarlarını ve kayıtlı giriş bilgilerini bu telefondan siler. Veriler silinmez.')+'</div></div>';
+  '<div class="set-group"><h3>Bu cihaz</h3><div class="set-card">'+li('changecfg','settings','Firebase ayarlarını değiştir',usingEmbedded()?'Şu an gömülü ayar: '+esc(EMBED_CFG.projectId)+' · başka müşteri kurulumu için':'Şu an özel ayar: '+esc(activeCfg().projectId))+li('resetdevice','alert','Bu cihazı dükkandan ayır','Firebase ayarlarını ve kayıtlı giriş bilgilerini bu telefondan siler. Veriler silinmez.')+'</div></div>';
   $('#view').innerHTML = html;
   const bi = $('#setBiz'); bi.addEventListener('change',()=>{ const v=bi.value.trim(); if(!v) return; setConfig({biz:v},'İşletme adı'); dbSet(['public','roster'],{biz:v},true,'Liste').catch(()=>{}); lsSet(LS.roster, Object.assign(lsGet(LS.roster,{}),{biz:v})); toast('İşletme adı kaydedildi','success'); });
 }
@@ -3378,15 +3406,15 @@ async function boot(){
   applyTheme(); applyFont(); buildShell();
   const h = location.hash;
   if(h.indexOf('#katil=')===0){
-    try{ const j=b64d(h.slice(7)); if(j.c && j.s){ lsSet(LS.cfg,j.c); lsSet(LS.shop,j.s); lsDel(LS.roster); } }catch(e){ toast('Davet linki okunamadı','error'); }
+    try{ const j=b64d(h.slice(7)); if(j.s){ if(j.c && j.c.projectId!==EMBED_CFG.projectId) lsSet(LS.cfg,j.c); else lsDel(LS.cfg); lsSet(LS.shop,j.s); lsDel(LS.roster); } }catch(e){ toast('Davet linki okunamadı','error'); }
     try{ history.replaceState(null,'',location.href.split('#')[0]); }catch(e){}
   }
   if(inPreview && !window.__FB_MOCK__){
     gateShow('<div class="gate-logo">'+ic('info',30)+'</div><h1>Önizleme penceresi</h1><p class="lead">Bu uygulama giriş ve senkron için internet adresinde çalışmalı. Kurulum rehberindeki adımlarla Netlify’a yükle ve oradaki linki aç.</p>');
     return;
   }
-  const cfg = lsGet(LS.cfg);
-  if(!cfg) return showSetupConfig();
+  if(lsGet(LS.cfgEdit,false)) return showSetupConfig();
+  const cfg = activeCfg();
   gateShow('<div class="gate-logo">'+ic('repeat',28)+'</div><h1>Bağlanıyor…</h1><p class="lead">Veriler hazırlanıyor</p>');
   try{ await loadFB(); }
   catch(e){ return gateError('İnternet gerekli','Uygulama ilk açılışta internetten parçalarını indirmeli. İnternete bağlanıp tekrar dene.'); }
@@ -3394,7 +3422,11 @@ async function boot(){
   catch(e){ return gateError('Firebase ayarları hatalı', esc(e.message||''), true); }
   await authReady();
   SHOP = lsGet(LS.shop);
-  if(!SHOP) return showOwnerStart();
+  if(!SHOP){
+    const found = await findShopPointer();
+    if(found){ SHOP = found; lsSet(LS.shop, SHOP); }
+    else return showConnect(found===null);
+  }
   await refreshRoster();
   if(auth.currentUser && !roster().some(p=>p.uid===auth.currentUser.uid)){ try{ await FB.signOut(auth); }catch(e){} }
   showRoster();
@@ -3403,10 +3435,22 @@ function gateError(title, text, resetCfg){
   gateShow('<div class="gate-logo" style="background:var(--out)">'+ic('alert',28)+'</div><h1>'+esc(title)+'</h1><p class="lead">'+text+'</p>'+
     '<button class="btn btn-primary btn-lg btn-block" onclick="location.reload()">Tekrar dene</button>'+
     (resetCfg?'<button class="btn btn-ghost btn-block" style="margin-top:8px" id="gReset">Ayarları yeniden gir</button>':''));
-  const r=$('#gReset'); if(r) r.onclick=()=>{ lsDel(LS.cfg); lsDel(LS.shop); lsDel(LS.roster); location.reload(); };
+  const r=$('#gReset'); if(r) r.onclick=()=>{ lsDel(LS.cfg); lsDel(LS.shop); lsDel(LS.roster); lsSet(LS.cfgEdit,true); location.reload(); };
 }
 
-/* ---------- 1) Firebase ayarlarını yapıştır ---------- */
+/* ---------- 0) Bu cihazda dükkan bulunamadı ---------- */
+function showConnect(noShopYet){
+  gateShow('<div class="gate-logo">D</div><h1>Dükkana bağlan</h1><p class="lead">'+(noShopYet?'Henüz kurulmuş bir dükkan bulunamadı. Yöneticiysen dükkanı kur ya da yönetici hesabınla giriş yap.':'Bu cihaz dükkanı bulamadı. Bir kez bağlaman yeterli.')+'</p>'+
+    '<div class="card stack"><button class="btn btn-primary btn-lg btn-block" id="cnOwner">'+ic('lock',19)+' Yönetici girişi</button>'+
+    '<button class="btn btn-secondary btn-lg btn-block" id="cnNew">'+ic('plus',19)+' Yeni dükkan kur</button></div>'+
+    '<div class="card section"><div class="field"><label for="joinIn">Çalışan mısın? Yöneticinin gönderdiği davet linkini yapıştır</label><input class="input" id="joinIn" placeholder="https://…#katil=…" autocomplete="off"></div><button class="btn btn-secondary btn-block" id="joinGo" style="margin-top:10px">Davetle katıl</button></div>');
+  $('#cnOwner').onclick=()=>showOwnerStart('login');
+  $('#cnNew').onclick=()=>showOwnerStart('new');
+  $('#joinGo').onclick=()=>{ const v=$('#joinIn').value.trim(), i=v.indexOf('#katil='); if(i<0){ toast('Bu bir davet linki değil','error'); return; }
+    try{ const j=b64d(v.slice(i+7)); if(!j.s) throw 0; if(j.c && j.c.projectId!==EMBED_CFG.projectId) lsSet(LS.cfg,j.c); else lsDel(LS.cfg); lsSet(LS.shop,j.s); lsDel(LS.roster); location.reload(); }catch(e){ toast('Davet linki bozuk','error'); } };
+}
+
+/* ---------- 1) Firebase ayarlarını yapıştır (sadece başka proje için) ---------- */
 function showSetupConfig(){
   gateShow('<div class="gate-logo">D</div><h1>Kuruluma hoş geldin</h1><p class="lead">Firebase’den kopyaladığın ayar kodunu aşağıya yapıştır. (Kurulum rehberi, Adım 2)</p>'+
     '<div class="card"><div class="field"><label for="cfgIn">Firebase ayar kodu (firebaseConfig)</label><textarea class="input code" id="cfgIn" rows="8" placeholder="const firebaseConfig = {\n  apiKey: &quot;…&quot;,\n  authDomain: &quot;…&quot;,\n  projectId: &quot;…&quot;,\n  …\n};"></textarea></div>'+
@@ -3415,12 +3459,16 @@ function showSetupConfig(){
   $('#cfgGo').onclick = ()=>{
     const c = parseConfig($('#cfgIn').value);
     if(!c){ $('#cfgErr').textContent='Kod tanınmadı. Firebase’deki firebaseConfig bloğunun tamamını kopyala (apiKey, projectId, appId içermeli).'; return; }
-    lsSet(LS.cfg, c); boot();
+    if(c.projectId===EMBED_CFG.projectId) lsDel(LS.cfg); else lsSet(LS.cfg, c); lsDel(LS.cfgEdit); lsDel(LS.shop); lsDel(LS.roster); lsDel(LS.pinh); location.reload();
   };
+  const back=document.createElement('button'); back.className='btn btn-ghost btn-block'; back.style.marginTop='10px'; back.textContent='Vazgeç, önceki ayarla devam et';
+  back.onclick=()=>{ lsDel(LS.cfgEdit); location.reload(); }; $('#gate .gate-in').appendChild(back);
+  if(!usingEmbedded()){ const emb=document.createElement('button'); emb.className='btn btn-ghost btn-block'; emb.textContent='Gömülü ayara dön ('+EMBED_CFG.projectId+')';
+    emb.onclick=()=>{ [LS.cfg,LS.cfgEdit,LS.shop,LS.roster,LS.pinh].forEach(lsDel); location.reload(); }; $('#gate .gate-in').appendChild(emb); }
   $('#joinGo').onclick = ()=>{
     const v=$('#joinIn').value.trim(), i=v.indexOf('#katil=');
     if(i<0){ toast('Bu bir davet linki değil','error'); return; }
-    try{ const j=b64d(v.slice(i+7)); lsSet(LS.cfg,j.c); lsSet(LS.shop,j.s); lsDel(LS.roster); boot(); }catch(e){ toast('Davet linki bozuk','error'); }
+    try{ const j=b64d(v.slice(i+7)); if(j.c) lsSet(LS.cfg,j.c); else lsDel(LS.cfg); lsSet(LS.shop,j.s); lsDel(LS.roster); lsDel(LS.cfgEdit); location.reload(); }catch(e){ toast('Davet linki bozuk','error'); }
   };
 }
 
@@ -3436,7 +3484,7 @@ function showOwnerStart(mode){
     (mode==='login'?'<button type="button" class="btn btn-ghost btn-block" id="oForgot">Şifremi unuttum</button><div class="ok-msg" id="oOk" hidden></div>':'')+'</div>'+
     '<button class="btn btn-ghost btn-block" style="margin-top:10px" id="oCfg">Firebase ayarlarını değiştir</button>');
   $$('[data-om]').forEach(b=>b.onclick=()=>showOwnerStart(b.dataset.om));
-  $('#oCfg').onclick=()=>{ lsDel(LS.cfg); location.reload(); };
+  $('#oCfg').onclick=()=>{ lsSet(LS.cfgEdit,true); location.reload(); };
   if($('#oForgot')) $('#oForgot').onclick=()=>sendOwnerReset($('#oEmail').value.trim(), $('#oErr'), $('#oOk'), $('#oForgot'));
   $('#oGo').onclick = async ()=>{
     const em=$('#oEmail').value.trim(), pw=$('#oPw').value, err=$('#oErr'), btn=$('#oGo');
@@ -3449,7 +3497,7 @@ function showOwnerStart(mode){
       else await FB.signInWithEmailAndPassword(auth, em, pw);
       lsSet(LS.owner, em);
       const o = await FB.getDoc(FB.doc(fs,'owners',auth.currentUser.uid));
-      if(o.exists() && o.data().shopId){ SHOP=o.data().shopId; lsSet(LS.shop,SHOP); await FB.signOut(auth); await refreshRoster(); toast('Dükkan bulundu','success'); showRoster(); }
+      if(o.exists() && o.data().shopId){ SHOP=o.data().shopId; lsSet(LS.shop,SHOP); await claimShopPointer(); await FB.signOut(auth); await refreshRoster(); toast('Dükkan bulundu','success'); showRoster(); }
       else showShopWizard();
     }catch(e){ busy(btn,false); err.textContent = authMsg(e); }
   };
@@ -3492,6 +3540,7 @@ async function createShop(biz, name, color, pin){
   b.set(D('state','main'), {recLast:{}, lastBackup:null});
   b.set(D('public','roster'), {biz, people:[person]});
   await b.commit();
+  await claimShopPointer();
   lsSet(LS.shop, SHOP); lsSet(LS.roster, {biz, people:[person]});
   await FB.signOut(auth);
   toast('Dükkan kuruldu','success');
@@ -3653,6 +3702,7 @@ const ACTIONS = {
   memenu:openMeMenu, switchuser:()=>switchUser(), changepin:openChangePin, panel:openPanelLogin,
   adduser:()=>editUser(null), ownerpw:openOwnerPassword, owneremail:openOwnerEmail, trash:openTrash,
   copyinv:()=>{ const i=$('#invLink'); try{ navigator.clipboard.writeText(i.value).then(()=>toast('Link kopyalandı','success'),()=>{ i.select(); toast('Linki seçtim, kopyala','info'); }); }catch(e){ i.select(); } },
+  changecfg:async ()=>{ if(await confirmDialog({title:'Firebase ayarları değiştirilsin mi?', text:'Bu cihaz şu anki dükkandan çıkar ve yeni ayar kodu ister. Bu dükkanın verileri silinmez; “Vazgeç, gömülü ayarlarla devam et” ile geri dönebilirsin.', ok:'Devam', danger:true})){ await logout(); lsSet(LS.cfgEdit,true); location.reload(); } },
   resetdevice:async ()=>{ if(await confirmDialog({title:'Bu cihaz ayrılsın mı?', text:'Bu telefondaki bağlantı ayarları silinir. Veriler bulutta kalır. Tekrar bağlamak için davet linki gerekir.', ok:'Ayır', danger:true})){ await logout(); [LS.cfg,LS.shop,LS.roster,LS.pinh].forEach(lsDel); location.reload(); } },
   older:()=>{ needFrom(addMonths(loadedFrom||today(),-2)); renderTx(); },
   selmode:()=>{ UI.tx.sel = UI.tx.sel ? null : new Set(); renderTx(); },
