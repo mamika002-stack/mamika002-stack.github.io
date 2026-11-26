@@ -3216,6 +3216,10 @@ const ST_KIND = {
 };
 UI.st = UI.st || {p:'month', cf:null, ct:null};
 const ST_PERIODS = [['month','Bu ay'],['lastmonth','Geçen ay'],['year','Bu yıl'],['custom','Özel']];
+const NFH = new Intl.NumberFormat('tr-TR',{maximumFractionDigits:2});
+function hoursStr(h){ return NFH.format(h)+' saat'; }
+function parseHours(v){ v=String(v==null?'':v).trim().replace(/\s/g,'').replace(',','.'); if(!v) return NaN; if(!/^\d{0,3}(\.\d{0,2})?$/.test(v)) return NaN; const n=Number(v); return isFinite(n)?n:NaN; }
+function isHourly(x){ return x && x.kind==='ot' && typeof x.hours==='number' && x.hours>0; }
 function staffById(id){ return (S.staff||[]).find(s=>s.id===id) || null; }
 function perCatId(){ return S.cats.some(c=>c.id==='c_per') ? 'c_per' : (catsOf('out')[0]||{id:'c_per'}).id; }
 /* Dönem içindeki maaş hakkı: işe girişten itibaren dönemin kapsadığı her ay için bir aylık maaş */
@@ -3235,8 +3239,9 @@ function staffMoves(id, from, to){
 }
 function staffStats(s, from, to){
   const {pays, acc} = staffMoves(s.id, from, to);
-  const r = {salaryDue:salaryDue(s,from,to), adv:0, sal:0, bonusPaid:0, otPaid:0, bonusAcc:0, otAcc:0, ded:0, given:0};
+  const r = {otHours:0, otLegacy:0, salaryDue:salaryDue(s,from,to), adv:0, sal:0, bonusPaid:0, otPaid:0, bonusAcc:0, otAcc:0, ded:0, given:0};
   pays.forEach(x=>{ r.given+=x.a; if(x.kind==='adv') r.adv+=x.a; else if(x.kind==='sal') r.sal+=x.a; else if(x.kind==='bonus') r.bonusPaid+=x.a; else if(x.kind==='ot') r.otPaid+=x.a; else r.adv+=x.a; });
+  pays.concat(acc).forEach(x=>{ if(x.kind==='ot'){ if(isHourly(x)) r.otHours+=x.hours; else r.otLegacy+=x.a; } });
   acc.forEach(x=>{ if(x.kind==='bonus') r.bonusAcc+=x.a; else if(x.kind==='ot') r.otAcc+=x.a; else if(x.kind==='ded') r.ded+=x.a; });
   r.bonus = r.bonusPaid+r.bonusAcc; r.ot = r.otPaid+r.otAcc;
   r.earned = r.salaryDue + r.bonus + r.ot - r.ded;
@@ -3257,7 +3262,7 @@ function renderStaff(){
   }
   const rows = list.map(s=>({s, k:staffStats(s, r.from, r.to)}));
   const act = rows.filter(x=>x.s.active!==false || x.k.given>0);
-  const T = act.reduce((a,x)=>{ a.given+=x.k.given; a.sal+=x.k.sal; a.adv+=x.k.adv; a.bo+=x.k.bonusPaid+x.k.otPaid; if(x.s.active!==false) a.rem+=Math.max(0,x.k.remaining); return a; },{given:0,sal:0,adv:0,bo:0,rem:0});
+  const T = act.reduce((a,x)=>{ a.hours+=x.k.otHours; a.given+=x.k.given; a.sal+=x.k.sal; a.adv+=x.k.adv; a.bo+=x.k.bonusPaid+x.k.otPaid; if(x.s.active!==false) a.rem+=Math.max(0,x.k.remaining); return a; },{hours:0,given:0,sal:0,adv:0,bo:0,rem:0});
   const ciro = sumRange(r.from, r.to).i;
   html += '<div class="kpis section st-kpis">'+
     '<div class="kpi kpi-hero"><div class="kpi-label">Toplam Verilen Para</div><div class="kpi-val num" data-count="'+T.given+'" data-key="st-given">'+money(T.given)+'</div>'+
@@ -3269,10 +3274,14 @@ function renderStaff(){
   html += '<div class="card section" style="padding:4px 16px"><div class="list">'+rows.map(({s,k})=>{
     const off = s.active===false;
     return '<button class="li st-row'+(off?' off':'')+'" data-staff="'+s.id+'">'+avatar({name:s.name,color:s.color||'#64748b'},42)+
-      '<div class="grow"><div class="t">'+esc(s.name)+(off?' <span class="pill">Pasif</span>':'')+'</div><div class="s">'+esc(s.role||'Personel')+(s.salary?' · Maaş '+money(s.salary,{round:true}):'')+'</div>'+
+      '<div class="grow"><div class="t">'+esc(s.name)+(off?' <span class="pill">Pasif</span>':'')+'</div><div class="s">'+esc(s.role||'Personel')+(s.salary?' · Maaş '+money(s.salary,{round:true}):'')+(k.otHours?' · <b>'+hoursStr(k.otHours)+' mesai</b>':'')+'</div>'+
       (k.earned>0?'<div class="progress" style="margin-top:6px" aria-label="Maaşın yüzde '+Math.round(k.pct)+' ödendi"><i style="width:'+k.pct+'%"></i></div>':'')+'</div>'+
       '<div class="st-amt"><b class="num">'+money(k.given,{round:true})+'</b><small>verildi</small>'+(k.remaining>0?'<small style="color:var(--warn);font-weight:700">Kalan '+money(k.remaining,{round:true})+'</small>':k.remaining<0?'<small style="color:var(--out);font-weight:700">Fazla '+money(-k.remaining,{round:true})+'</small>':'')+'</div></button>';
   }).join('')+'</div></div>';
+  const hrs = rows.filter(x=>x.k.otHours>0).sort((a,b)=>b.k.otHours-a.k.otHours);
+  html += '<div class="card section"><div class="card-h"><h3 class="row">'+ic('clock',18)+' '+(st.p==='month'?'Bu ay':'Bu dönem')+' toplam mesai</h3><b class="num">'+hoursStr(T.hours)+'</b></div>'+
+    (hrs.length ? hrs.map(x=>'<div class="who-row">'+avatar({name:x.s.name,color:x.s.color||'#64748b'},28)+'<span class="grow">'+esc(x.s.name)+'</span><span class="muted num">'+money(x.k.ot,{round:true})+'</span><b class="num" style="min-width:76px;text-align:right">'+hoursStr(x.k.otHours)+'</b></div>').join('')
+      : '<p class="muted" style="margin:0">Bu dönemde saatlik mesai girilmedi.</p>')+'</div>';
   const ranked = rows.filter(x=>x.k.given>0).sort((a,b)=>b.k.given-a.k.given);
   html += '<div class="card section"><div class="card-h"><h3>'+(st.p==='month'?'Bu ay':'Bu dönem')+' kime ne kadar verildi</h3></div>'+
     (ranked.length ? ranked.map((x,i)=>'<div class="who-row"><span class="st-rank">'+(i+1)+'</span>'+avatar({name:x.s.name,color:x.s.color||'#64748b'},28)+'<span class="grow">'+esc(x.s.name)+'</span><b class="num">'+money(x.k.given)+'</b></div>').join('')
@@ -3284,10 +3293,12 @@ function renderStaff(){
 function staffHistoryRow(x, isPay){
   const k = ST_KIND[x.kind] || ST_KIND.adv, by = personById(x.byPid) || {name:x.byName||'?', color:'#94a3b8'};
   const minus = isPay || x.kind==='ded';
-  const label = k.t + (isPay && (x.kind==='bonus'||x.kind==='ot') ? ' (peşin ödendi)' : (!isPay && x.kind!=='ded' ? ' (maaşa eklendi)' : ''));
+  let label = k.t + (isPay && (x.kind==='bonus'||x.kind==='ot') ? ' (peşin ödendi)' : (!isPay && x.kind!=='ded' ? ' (maaşa eklendi)' : ''));
+  let extra = '';
+  if(x.kind==='ot'){ if(isHourly(x)){ label = 'Mesai · '+hoursStr(x.hours)+(isPay?' (peşin ödendi)':' (maaşa eklendi)'); extra = hoursStr(x.hours)+' × '+money(x.rateH||0)+' · '; } else { label = 'Mesai (TL olarak girilmiş)'+(isPay?' · peşin':''); } }
   return '<button class="tx" style="--by:'+personColor(x.byPid)+'" data-stx="'+x.id+'" data-src="'+(isPay?'pay':'acc')+'">'+
     '<span class="tx-ic" style="background:'+(minus?'var(--out-bg)':'var(--in-bg)')+';color:'+(minus?'var(--out)':'var(--in)')+'">'+ic(k.icon,18)+'</span>'+
-    '<span class="tx-main"><span class="tx-title">'+esc(label)+'</span><span class="tx-sub">'+byLine(x)+'<span>'+esc(trDate(x.d))+(isPay?' · '+(METHOD_SHORT[x.m]||''):'')+(x.note?' · '+esc(x.note):'')+'</span></span></span>'+
+    '<span class="tx-main"><span class="tx-title">'+esc(label)+'</span><span class="tx-sub">'+byLine(x)+'<span>'+esc(extra)+esc(trDate(x.d))+(isPay?' · '+(METHOD_SHORT[x.m]||''):'')+(x.note?' · '+esc(x.note):'')+'</span></span></span>'+
     '<span class="tx-amt '+(isPay?'out':(x.kind==='ded'?'out':'in'))+'">'+(isPay?'−':(x.kind==='ded'?'−':'+'))+money(x.a)+'<small>'+(isPay?'Gider':'Hakediş')+'</small></span></button>';
 }
 function openStaff(id){
@@ -3297,9 +3308,9 @@ function openStaff(id){
     .sort((a,b)=>a.x.d<b.x.d?1:a.x.d>b.x.d?-1:(b.x.ts||0)-(a.x.ts||0)).slice(0,120);
   const neg = v=>v?'−'+money(v):money(0);
   const line = (l,v,cls)=>'<div class="ds-row '+(cls||'')+'"><span>'+l+'</span><span class="num">'+v+'</span></div>';
-  const body = '<div class="row" style="gap:12px;margin-bottom:6px">'+avatar({name:s.name,color:s.color||'#64748b'},52)+'<div class="grow" style="flex:1;min-width:0"><div style="font-weight:750;font-size:calc(18px*var(--fs,1))">'+esc(s.name)+'</div><div class="muted" style="font-size:calc(13.5px*var(--fs,1))">'+esc(s.role||'Personel')+(s.start?' · Giriş '+esc(trDate(s.start)):'')+(s.phone?' · '+esc(s.phone):'')+'</div></div></div>'+
+  const body = '<div class="row" style="gap:12px;margin-bottom:6px">'+avatar({name:s.name,color:s.color||'#64748b'},52)+'<div class="grow" style="flex:1;min-width:0"><div style="font-weight:750;font-size:calc(18px*var(--fs,1))">'+esc(s.name)+'</div><div class="muted" style="font-size:calc(13.5px*var(--fs,1))">'+esc(s.role||'Personel')+(s.start?' · Giriş '+esc(trDate(s.start)):'')+(s.otRate?' · Mesai '+money(s.otRate)+'/saat':'')+(s.phone?' · '+esc(s.phone):'')+'</div></div></div>'+
     '<div class="daysum st-sum"><div class="muted" style="font-size:calc(12.5px*var(--fs,1));margin-bottom:4px">'+esc(rangeLabel(st.p,r))+'</div>'+
-      line('Maaş', money(k.salaryDue))+line('+ Prim', money(k.bonus))+line('+ Mesai', money(k.ot))+line('− Kesinti', neg(k.ded),'minus')+
+      line('Maaş', money(k.salaryDue))+line('+ Prim', money(k.bonus))+line('+ Mesai'+(k.otHours?' ('+hoursStr(k.otHours)+')':''), money(k.ot))+line('− Kesinti', neg(k.ded),'minus')+
       line('= Hakediş', '<b>'+money(k.earned)+'</b>','eq')+line('− Avans', neg(k.adv),'minus')+line('− Maaş ödemesi', neg(k.sal),'minus')+
       (k.bonusPaid+k.otPaid?line('− Peşin ödenen prim/mesai', neg(k.bonusPaid+k.otPaid),'minus'):'')+
       '<div class="ds-total '+(k.remaining>=0?'pos':'neg')+'" style="'+(k.remaining>0?'background:var(--warn-bg);color:var(--warn)':'')+'"><span>'+(k.remaining>=0?'KALAN ÖDENECEK':'FAZLA ÖDENDİ')+'</span><b class="num">'+money(Math.abs(k.remaining))+'</b></div></div>'+
@@ -3323,23 +3334,41 @@ function openStaffEntry(staffId, kind, rec, src){
   const r = getRange(UI.st.p, UI.st.cf, UI.st.ct), k = staffStats(s, r.from, r.to);
   let paid = editing ? src==='pay' : !!K.paid, m = (rec&&rec.m) || 'cash';
   const canChoose = kind==='bonus' || kind==='ot';
+  const hourMode = kind==='ot' && (!editing || isHourly(rec));
+  const rateH = editing && isHourly(rec) ? (rec.rateH||0) : (s.otRate||0);
+  if(hourMode && !editing && !(rateH>0)){
+    toast('Önce bu personelin saatlik ücretini gir','error',{duration:4500});
+    editStaff(staffId, {focus:'#sfH', then:'ot'}); return;
+  }
   const defAmt = editing ? rec.a : (kind==='sal' ? Math.max(0,k.remaining) : 0);
   const hint = {adv:'Personele verilen avans. Gider olarak işlenir, maaştan düşer.', sal:'Maaş ödemesi. Gider olarak işlenir.', bonus:'Prim', ot:'Mesai ücreti', ded:'Kesinti para çıkışı değildir; kalan ödenecek tutarı azaltır.'}[kind];
   const body = ()=>'<p class="muted" style="margin:0 0 12px;font-size:calc(14px*var(--fs,1))">'+esc(hint)+(kind==='sal'&&!editing&&k.remaining>0?' Kalan: <b>'+money(k.remaining)+'</b>':'')+'</p>'+
-    '<div class="field"><label for="seA">Tutar (₺)</label><input class="input st-amt-in" id="seA" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(defAmt)+'" autocomplete="off"></div>'+
+    (hourMode
+      ? '<div class="field"><label for="seH">Kaç saat?</label><input class="input st-amt-in" id="seH" inputmode="decimal" placeholder="0" value="'+(editing?esc(NFH.format(rec.hours)):'')+'" autocomplete="off"></div>'+
+        '<div class="chips wrap" style="margin-top:8px">'+['0,5','1','2','3','4','8'].map(h=>'<button type="button" class="chip" data-seh="'+h+'">+'+h+' sa</button>').join('')+'<button type="button" class="chip" data-seh="0">Temizle</button></div>'+
+        '<div class="com-out" id="seCalc" style="font-size:calc(15px*var(--fs,1))"></div>'+
+        '<p class="muted" style="font-size:calc(12.5px*var(--fs,1));margin:6px 0 0">Saatlik ücret: <b>'+money(rateH)+'</b>'+(editing?' (bu kayda uygulanan ücret)':' · personel kartından değiştirilebilir')+'</p>'
+      : (kind==='ot'&&editing ? '<p class="pill" style="margin:0 0 8px">TL olarak girilmiş eski kayıt</p>' : '')+'<div class="field"><label for="seA">Tutar (₺)</label><input class="input st-amt-in" id="seA" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(defAmt)+'" autocomplete="off"></div>')+
     (canChoose && !editing ? '<div class="form-sec"><span class="label">Ödeme</span><div class="seg"><button type="button" class="'+(paid?'on':'')+'" data-sep="1">Şimdi ödendi</button><button type="button" class="'+(!paid?'on':'')+'" data-sep="0">Maaşa eklensin</button></div><p class="muted" style="font-size:calc(12.5px*var(--fs,1));margin:6px 0 0">'+(paid?'Para şimdi verildi: gider olarak işlenir.':'Para şimdi verilmedi: maaş ödenirken verilecek, kalan tutara eklenir.')+'</p></div>' : '')+
     (paid ? '<div class="form-sec"><span class="label">Ödeme yöntemi</span><div class="seg">'+['cash','bank','card'].map(x=>'<button type="button" class="'+(m===x?'on':'')+'" data-sem="'+x+'">'+ic(METHOD_ICON[x],17)+METHOD_SHORT[x]+'</button>').join('')+'</div></div>' : '')+
     '<div class="form-sec"><span class="label">Tarih</span><div class="row" style="flex-wrap:wrap"><div class="chips" style="flex:0 0 auto"><button type="button" class="chip" data-sed="0">Bugün</button><button type="button" class="chip" data-sed="1">Dün</button></div><input class="input" type="date" id="seD" value="'+((rec&&rec.d)||today())+'" style="flex:1;min-width:150px" aria-label="Tarih"></div></div>'+
     '<div class="form-sec"><div class="field"><label for="seN">Not <span class="muted">(isteğe bağlı)</span></label><input class="input" id="seN" maxlength="120" value="'+esc((rec&&rec.note)||'')+'" placeholder="Örn: Hafta sonu mesaisi"></div></div>'+
     (editing?'<button class="btn btn-ghost btn-block" style="margin-top:16px;color:var(--out)" data-sedel="1">'+ic('trash',18)+' Bu hareketi sil</button>':'');
-  const sh = openSheet({title:s.name+' · '+K.t+(editing?' (düzenle)':''), body:body(), foot:'<button class="btn btn-primary btn-lg" data-sesave="1">'+ic('check',20,2.4)+' Kaydet</button>', focus:'#seA'});
+  const sh = openSheet({title:s.name+' · '+K.t+(editing?' (düzenle)':''), body:body(), foot:'<button class="btn btn-primary btn-lg" data-sesave="1">'+ic('check',20,2.4)+' Kaydet</button>', focus:hourMode?'#seH':'#seA'});
   const sb = sh.el.querySelector('.sheet-b');
-  const keep = ()=>({a:$('#seA',sh.el).value, d:$('#seD',sh.el).value, n:$('#seN',sh.el).value});
-  const redraw = ()=>{ const v=keep(); sb.innerHTML=body(); $('#seA',sh.el).value=v.a; $('#seD',sh.el).value=v.d; $('#seN',sh.el).value=v.n; };
+  const amtEl = ()=>$(hourMode?'#seH':'#seA',sh.el);
+  const keep = ()=>({a:amtEl().value, d:$('#seD',sh.el).value, n:$('#seN',sh.el).value});
+  const calc = ()=>{ if(!hourMode) return; const o=$('#seCalc',sh.el); if(!o) return; const h=parseHours($('#seH',sh.el).value);
+    if(isNaN(h)){ o.className='com-out'+($('#seH',sh.el).value.trim()?' bad':' dim'); o.textContent = $('#seH',sh.el).value.trim()?'Saati 1,5 gibi yaz':'Saati yazınca tutar hesaplanır'; return; }
+    o.className='com-out'; o.textContent = hoursStr(h)+' × '+money(rateH)+' = '+money(Math.round(h*rateH)); };
+  const bindCalc = ()=>{ const h=$('#seH',sh.el); if(h) h.addEventListener('input',calc); calc(); };
+  const redraw = ()=>{ const v=keep(); sb.innerHTML=body(); amtEl().value=v.a; $('#seD',sh.el).value=v.d; $('#seN',sh.el).value=v.n; bindCalc(); };
+  bindCalc();
   sh.el.addEventListener('click', async e=>{
     const b=e.target.closest('button'); if(!b) return;
     if(b.dataset.sep){ paid = b.dataset.sep==='1'; redraw(); }
     else if(b.dataset.sem){ m=b.dataset.sem; redraw(); }
+    else if(b.dataset.seh!==undefined){ const h=$('#seH',sh.el); const add=parseHours(b.dataset.seh); const cur=parseHours(h.value); h.value = add===0 ? '' : NFH.format(Math.round(((isNaN(cur)?0:cur)+add)*100)/100); calc(); }
     else if(b.dataset.sed){ $('#seD',sh.el).value = addDays(today(),-(+b.dataset.sed)); }
     else if(b.dataset.sedel){
       if(!(await confirmDialog({title:'Hareket silinsin mi?', text:esc(K.t)+' · '+money(rec.a)+(src==='pay'?'<br>İlgili gider kaydı da silinir. Silinenler listesinden geri yükleyebilirsin.':''), ok:'Sil', danger:true}))) return;
@@ -3348,38 +3377,48 @@ function openStaffEntry(staffId, kind, rec, src){
       sh.close(true); renderView(); openStaff(staffId); toast('Silindi','info');
     }
     else if(b.dataset.sesave){
-      const a = parseMoney($('#seA',sh.el).value), d = $('#seD',sh.el).value || today(), note = $('#seN',sh.el).value.trim();
-      if(isNaN(a) || a<=0){ toast('Geçerli bir tutar yaz','error'); $('#seA',sh.el).focus(); return; }
+      const d = $('#seD',sh.el).value || today(), note = $('#seN',sh.el).value.trim();
+      let a, hx = {};
+      if(hourMode){
+        const h = parseHours($('#seH',sh.el).value);
+        if(isNaN(h) || h<=0){ toast('Kaç saat olduğunu yaz (örn. 1,5)','error'); $('#seH',sh.el).focus(); return; }
+        if(h>400){ toast('Saat çok yüksek görünüyor','error'); return; }
+        a = Math.round(h*rateH); hx = {hours:h, rateH};
+      } else a = parseMoney($('#seA',sh.el).value);
+      if(isNaN(a) || a<=0){ toast('Geçerli bir tutar yaz','error'); amtEl().focus(); return; }
       if(a>=100000000){ toast('Tutar çok yüksek görünüyor','error'); return; }
       if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){ toast('Tarih geçersiz','error'); return; }
       if(editing){
-        if(src==='pay') dbUpdateTx(rec.id, {a, d, m, note, desc:s.name+' · '+K.t});
-        else { const before=Object.assign({},rec); Object.assign(rec,{a,d,note}); dbUpd('payroll', rec.id, {a, d, note, editedBy:ME.name, editedTs:Date.now()}, 'Düzenleme'); audit('düzenle','hakediş',rec.id,before,rec); }
+        const desc = s.name+' · '+K.t+(hx.hours?' '+hoursStr(hx.hours):'');
+        if(src==='pay') dbUpdateTx(rec.id, Object.assign({a, d, m, note, desc}, hx));
+        else { const before=Object.assign({},rec); Object.assign(rec,{a,d,note},hx); dbUpd('payroll', rec.id, Object.assign({a, d, note, editedBy:ME.name, editedTs:Date.now()}, hx), 'Düzenleme'); audit('düzenle','hakediş',rec.id,before,rec); }
       } else if(paid){
-        dbAddTx({t:'out', a, c:perCatId(), m, d, desc:s.name+' · '+K.t, note, sup:null, sensitive:true, staffId, kind});
+        dbAddTx(Object.assign({t:'out', a, c:perCatId(), m, d, desc:s.name+' · '+K.t+(hx.hours?' '+hoursStr(hx.hours):''), note, sup:null, sensitive:true, staffId, kind}, hx));
       } else {
-        const p = dbAdd('payroll', {staffId, kind, a, d, note, deleted:false}, 'Hakediş');
+        const p = dbAdd('payroll', Object.assign({staffId, kind, a, d, note, deleted:false}, hx), 'Hakediş');
         S.payroll = (S.payroll||[]).concat([p]); audit('ekle','hakediş',p.id,null,p);
       }
       sh.close(true); renderView(); openStaff(staffId);
-      toast(K.t+' kaydedildi · '+money(a)+(paid&&!editing?' · gider olarak işlendi':''),'success');
+      toast(K.t+' kaydedildi · '+(hx.hours?hoursStr(hx.hours)+' = ':'')+money(a)+(paid&&!editing?' · gider olarak işlendi':''),'success');
     }
   });
 }
 
 /* ---------- Personel ekle / düzenle ---------- */
-function editStaff(id){
+function editStaff(id, opts){
+  opts = opts||{};
   const s = id ? staffById(id) : null;
   const used = (S.staff||[]).map(x=>x.color);
   const T = {color:s?s.color:(USER_COLORS.find(c=>used.indexOf(c)<0)||USER_COLORS[0]), active:s?s.active!==false:true};
   const body = ()=>'<div class="field"><label for="sfN">Ad soyad</label><input class="input" id="sfN" maxlength="40" value="'+esc(s?s.name:'')+'" placeholder="Örn: Ahmet Usta"></div>'+
     '<div class="form-sec"><div class="field"><label for="sfR">Görevi</label><input class="input" id="sfR" maxlength="30" list="sfRoles" value="'+esc(s&&s.role||'')+'" placeholder="Usta, kasa, kurye, paketçi…"><datalist id="sfRoles"><option value="Usta"><option value="Döner ustası"><option value="Kasa"><option value="Kurye"><option value="Paketçi"><option value="Komi"><option value="Bulaşıkçı"></datalist></div></div>'+
     '<div class="form-sec two"><div class="field"><label for="sfS">Aylık maaş (₺)</label><input class="input" id="sfS" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(s&&s.salary)+'"></div><div class="field"><label for="sfD">İşe giriş</label><input class="input" type="date" id="sfD" value="'+esc(s&&s.start||'')+'"></div></div>'+
+    '<div class="form-sec"><div class="field"><label for="sfH">Saatlik mesai ücreti (₺)</label><input class="input" id="sfH" inputmode="decimal" placeholder="Örn: 250,50" value="'+moneyInputVal(s&&s.otRate)+'"><span class="muted" style="font-size:calc(12.5px*var(--fs,1))">Mesai tutarı = saat × bu ücret. Değiştirince eski mesai kayıtları değişmez.</span></div></div>'+
     '<div class="form-sec"><div class="field"><label for="sfP">Telefon <span class="muted">(isteğe bağlı)</span></label><input class="input" id="sfP" type="tel" inputmode="tel" maxlength="20" value="'+esc(s&&s.phone||'')+'"></div></div>'+
     '<div class="form-sec"><div class="field"><label for="sfO">Not <span class="muted">(isteğe bağlı)</span></label><input class="input" id="sfO" maxlength="160" value="'+esc(s&&s.note||'')+'"></div></div>'+
     '<div class="form-sec"><span class="label">Renk</span>'+swatchPick(T.color)+'</div>'+
     (s?'<div class="form-sec"><button type="button" class="perm" data-sfa="1" role="switch" aria-checked="'+T.active+'"><div class="grow"><div style="font-weight:650">Aktif</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">Pasif personel listede soluk görünür, kalan ödenecek toplamına girmez</div></div><span class="switch'+(T.active?' on':'')+'"></span></button></div>':'');
-  const sh = openSheet({title:s?'Personeli düzenle':'Yeni personel', body:body(), foot:'<button class="btn btn-primary btn-lg" data-sfsave="1">Kaydet</button>', focus:s?null:'#sfN'});
+  const sh = openSheet({title:s?'Personeli düzenle':'Yeni personel', body:body(), foot:'<button class="btn btn-primary btn-lg" data-sfsave="1">Kaydet</button>', focus:opts.focus || (s?null:'#sfN')});
   sh.el.addEventListener('click', e=>{
     const b=e.target.closest('button'); if(!b) return;
     if(b.dataset.ucol){ T.color=b.dataset.ucol; $$('[data-ucol]',sh.el).forEach(x=>{ const on=x.dataset.ucol===T.color; x.classList.toggle('on',on); x.innerHTML=on?ic('check',18,3):''; }); }
@@ -3388,13 +3427,15 @@ function editStaff(id){
       const name=$('#sfN',sh.el).value.trim(), sal=$('#sfS',sh.el).value.trim();
       if(!name){ toast('Ad yaz','error'); return; }
       const salary = sal ? parseMoney(sal) : 0; if(isNaN(salary)||salary<0){ toast('Maaş tutarı geçersiz','error'); return; }
-      const data = {name, role:$('#sfR',sh.el).value.trim(), salary, start:$('#sfD',sh.el).value||'', phone:$('#sfP',sh.el).value.trim(), note:$('#sfO',sh.el).value.trim(), color:T.color, active:T.active, deleted:false};
+      const hr = $('#sfH',sh.el).value.trim(), otRate = hr ? parseMoney(hr) : 0; if(isNaN(otRate)||otRate<0){ toast('Saatlik ücret geçersiz (örn. 250,50)','error'); $('#sfH',sh.el).focus(); return; }
+      if(opts.then==='ot' && !otRate){ toast('Mesai için saatlik ücret gerekli','error'); $('#sfH',sh.el).focus(); return; }
+      const data = {name, role:$('#sfR',sh.el).value.trim(), salary, otRate, start:$('#sfD',sh.el).value||'', phone:$('#sfP',sh.el).value.trim(), note:$('#sfO',sh.el).value.trim(), color:T.color, active:T.active, deleted:false};
       const sid = id || ('st_'+randId(8));
       const before = s ? Object.assign({},s) : null;
       if(s) Object.assign(s, data); else S.staff = (S.staff||[]).concat([Object.assign({id:sid}, data)]);
       dbSet(['staff',sid], Object.assign({}, data, s?{editedBy:ME.name, editedTs:Date.now()}:{byUid:ME.uid, byPid:ME.pid, byName:ME.name, ts:Date.now()}), true, 'Personel').catch(()=>{});
       audit(s?'personel güncellendi':'personel eklendi','personel',sid,before,data);
-      sh.close(true); renderView(); if(s) openStaff(sid);
+      sh.close(true); renderView(); if(opts.then==='ot') openStaffEntry(sid,'ot'); else if(s) openStaff(sid);
       toast(s?'Kaydedildi':name+' eklendi','success');
     }
   });
