@@ -774,6 +774,31 @@ html[data-fs="xl"] .cat-grid{grid-template-columns:repeat(auto-fill,minmax(104px
 #bnavMore.on::before{content:"";position:absolute;top:0;width:28px;height:3px;border-radius:0 0 3px 3px;background:var(--text)}
 .bottomnav button span{white-space:nowrap;overflow:hidden;text-overflow:clip;max-width:100%}
 
+/* ---------- v2.7: günlük defter ---------- */
+.ledger-cta{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.ledger-cta .btn{min-height:64px;font-size:calc(18px*var(--fs,1));border-radius:18px}
+.ledger-list{display:flex;flex-direction:column}
+.lrow{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;text-align:left;padding:10px 4px 10px 12px;min-height:56px;border-bottom:1px solid var(--border)}
+.lrow:last-child{border-bottom:0}
+.lrow::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3.5px;border-radius:3px;background:var(--by,#94a3b8)}
+.lrow .lt{font-size:calc(12.5px*var(--fs,1));color:var(--text-3);font-variant-numeric:tabular-nums;font-weight:600}
+.lrow .lm{min-width:0;display:flex;flex-direction:column}
+.lrow .lm b{font-size:calc(15.5px*var(--fs,1));font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .lm small{font-size:calc(12px*var(--fs,1));color:var(--text-3);display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+.lrow .la{font-weight:700;font-size:calc(15.5px*var(--fs,1));white-space:nowrap}
+.lrow.row-in{animation:row-in .22s var(--ease)}
+.ledger-total{display:flex;justify-content:space-between;align-items:center;padding:12px 4px 2px;margin-top:4px;border-top:2px solid var(--border-strong);font-weight:750;font-size:calc(16px*var(--fs,1))}
+.ledger-total b{font-size:calc(20px*var(--fs,1));color:var(--out)}
+.btn-wa{background:#1f9d55;color:#fff}
+.btn-wa:hover{background:#198a4a}
+.q-desc{min-height:56px;font-size:calc(19px*var(--fs,1))!important}
+.q-cat{margin-top:12px;border:1px solid var(--border);border-radius:14px;padding:12px 14px}
+.q-cat summary{font-weight:650;cursor:pointer;min-height:28px;list-style:none}
+.q-cat summary::-webkit-details-marker{display:none}
+.q-added{margin-top:14px;padding:12px 14px;border-radius:14px;background:var(--surface-2)}
+@media (max-width:360px){.ledger-cta{grid-template-columns:1fr}}
+body[data-view="ledger"] .fab{display:none}
+
 @media (min-width:1000px){.mobile-only{display:none!important}}
 @media (max-width:999px){.desk-only{display:none!important}}
 </style>
@@ -957,7 +982,7 @@ async function createPinAccount(email, pin){
 const TXM = new Map();      // id -> kayıt (silinenler dahil)
 let liveFrom = null, loadedFrom = null, loadingFrom = null;
 function resetData(){
-  TXM.clear(); S.tx=[]; S.suppliers=[]; S.payments=[]; S.closings=[]; S.people=[]; S.members={}; S.recLast={}; S.staff=[]; S.payroll=[];
+  TXM.clear(); S.tx=[]; S.suppliers=[]; S.payments=[]; S.closings=[]; S.people=[]; S.members={}; S.recLast={}; S.staff=[]; S.payroll=[]; S.days={};
   liveFrom = loadedFrom = loadingFrom = null;
 }
 function rebuildTx(){ S.tx = Array.from(TXM.values()).filter(x=>!x.deleted); }
@@ -991,6 +1016,7 @@ function startListeners(){
   unsubs.push(FB.onSnapshot(FB.query(C('tx'), FB.where('m','==','credit')), opt, s=>{ trackSync(s,'k4'); applySnap(s); rebuildTx(); scheduleRender(); }, err('Veresiye')));
   unsubs.push(FB.onSnapshot(C('suppliers'), opt, s=>{ trackSync(s,'k5'); S.suppliers = s.docs.map(d=>Object.assign({id:d.id}, d.data())).filter(x=>!x.deleted); scheduleRender(); }, err('Tedarikçiler')));
   unsubs.push(FB.onSnapshot(C('payments'), opt, s=>{ trackSync(s,'k6'); S.payments = s.docs.map(d=>Object.assign({id:d.id}, d.data())).filter(x=>!x.deleted); scheduleRender(); }, err('Ödemeler')));
+  unsubs.push(FB.onSnapshot(C('days'), opt, s=>{ trackSync(s,'k12'); const m={}; s.docs.forEach(d=>m[d.id]=d.data()); S.days=m; scheduleRender(); }, err('Kasa devri')));
   unsubs.push(FB.onSnapshot(C('closings'), opt, s=>{ trackSync(s,'k7'); S.closings = s.docs.map(d=>Object.assign({id:d.id}, d.data())).filter(x=>!x.deleted); scheduleRender(); }, err('Kapanışlar')));
   if(isAdmin()){
     unsubs.push(FB.onSnapshot(FB.query(C('ptx'), FB.where('d','>=',liveFrom)), opt, s=>{ trackSync(s,'k8'); applySnap(s,{sensitive:true}); rebuildTx(); scheduleRender(); }, err('Personel kayıtları')));
@@ -1669,13 +1695,16 @@ function confirmDialog(o){
     const el = document.createElement('div'); el.className='dialog'; el.setAttribute('role','alertdialog'); el.setAttribute('aria-modal','true');
     el.innerHTML = (o.icon!==false?'<div class="dialog-ic" style="'+(o.danger?'':'background:var(--surface-2);color:var(--text)')+'">'+ic(o.icon||(o.danger?'trash':'info'),22)+'</div>':'')+
       '<h3>'+esc(o.title)+'</h3>'+(o.text?'<p>'+o.text+'</p>':'')+(o.extra||'')+
-      '<div class="acts">'+(o.cancel===false?'':'<button class="btn btn-secondary" data-r="0">'+esc(o.cancel||'Vazgeç')+'</button>')+'<button class="btn '+(o.danger?'btn-danger':'btn-primary')+'" data-r="1">'+esc(o.ok||'Tamam')+'</button></div>';
+      '<div class="acts">'+(o.cancel===false?'':'<button class="btn btn-secondary" data-r="0">'+esc(o.cancel||'Vazgeç')+'</button>')+'<button class="btn '+(o.danger?'btn-danger':'btn-primary')+'" data-rapid data-r="1">'+esc(o.ok||'Tamam')+'</button></div>';
     document.body.appendChild(bd); document.body.appendChild(el);
     requestAnimationFrame(()=>{ bd.classList.add('show'); el.classList.add('show'); });
     const prev = document.activeElement;
     const pushed = pushModalState(); let backed = false;
+    let settled = false;
     const finish = v=>{
+      if(settled) return;
       if(v && o.validate && !o.validate(el)) return;
+      settled = true;
       if(dialogBackClose===backFn) dialogBackClose = null;
       if(pushed && !backed) popModalState();
       dialogOpen=false; document.removeEventListener('keydown',kd,true);
@@ -1755,11 +1784,12 @@ const VIEWS = {
   reports:{t:'Raporlar', icon:'chart', hash:'raporlar'},
   settings:{t:'Ayarlar', icon:'settings', hash:'ayarlar'},
   panel:{t:'Yönetici Paneli', icon:'shield', hash:'panel'},
-  staff:{t:'Personel', icon:'users', hash:'personel'}
+  staff:{t:'Personel', icon:'users', hash:'personel'},
+  ledger:{t:'Defter', icon:'receipt', hash:'defter'}
 };
 function navViews(){
   if(ME.mode==='panel') return ['panel'];
-  return ['home','tx', can('closeDay')?'kasa':null, isAdmin()?'staff':null, can('seeCari')?'cari':null, can('seeReports')?'reports':null].filter(Boolean);
+  return ['ledger','home', can('closeDay')?'kasa':null, isAdmin()?'staff':null, 'tx', can('seeCari')?'cari':null, can('seeReports')?'reports':null].filter(Boolean);
 }
 function viewAllowed(v){ return ME.mode==='panel' ? v==='panel' : (v==='settings' || navViews().indexOf(v)>-1); }
 
@@ -1825,7 +1855,7 @@ function openMeMenu(){
     if(a==='switch') switchUser(); else if(a==='lock') lockNow(); else if(a==='pin') openChangePin(); else ACTIONS.theme(); });
 }
 function go(v){
-  if(!VIEWS[v] || !viewAllowed(v)) v = ME.mode==='panel'?'panel':'home';
+  if(!VIEWS[v] || !viewAllowed(v)) v = ME.mode==='panel'?'panel':'ledger';
   if(UI.view!==v){ UI.view=v; if(v==='tx') UI.tx.sel=null; window.scrollTo(0,0); }
   const h = '#'+VIEWS[v].hash;
   const fixHash = ()=>{ try{ if(location.hash!==h && /^(https?|file):$/.test(location.protocol)) history.replaceState(history.state,'',h); }catch(e){} };
@@ -1837,9 +1867,9 @@ function renderView(){
   $$('[data-nav]').forEach(b=>{ b.classList.toggle('on', b.dataset.nav===v); if(b.dataset.nav===v) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); });
   const host = $('#view');
   if(!ME.mode) return;
-  if(!viewAllowed(v)){ UI.view = ME.mode==='panel'?'panel':'home'; return renderView(); }
+  if(!viewAllowed(v)){ UI.view = ME.mode==='panel'?'panel':'ledger'; return renderView(); }
   document.body.classList.remove('kasa-open'); document.body.dataset.view = UI.view;
-  ({home:renderHome, tx:renderTx, kasa:renderKasa, cari:renderCari, reports:renderReports, settings:renderSettings, panel:renderPanel, staff:renderStaff})[UI.view]();
+  ({home:renderHome, tx:renderTx, kasa:renderKasa, cari:renderCari, reports:renderReports, settings:renderSettings, panel:renderPanel, staff:renderStaff, ledger:renderLedger})[UI.view]();
   markMore();
   if(UI.lastView!==v){ host.classList.remove('view-in'); void host.offsetWidth; host.classList.add('view-in'); UI.lastView=v; }
   countUp(host);
@@ -1918,7 +1948,7 @@ function renderHome(){
   const biz = S.settings.biz;
   setTop(VIEWS.home.t, (biz?esc(biz)+' · ':'')+esc(rangeLabel(h.p,r)));
 
-  let html = '';
+  let html = '<div class="ledger-cta" style="margin-bottom:12px"><button class="btn btn-danger btn-lg" data-act="quickexp">'+ic('minus',22,2.6)+' Gider Ekle</button><button class="btn btn-secondary btn-lg" data-nav="ledger">'+ic('receipt',20)+' Bugünün defteri</button></div>';
   // Uyarılar
   if(inPreview) html += '<div class="banner warn" style="margin-bottom:12px">'+ic('info',22)+'<div class="grow"><b>Önizleme penceresindesin</b>Burada kayıtlar kalıcı olmayabilir, yedek indirme ve yazdırma çalışmaz. Gerçek kullanım için dosyayı Chrome veya Safari’de aç.</div></div>';
   if(!storageOk && !inPreview) html += '<div class="banner danger">'+ic('alert',22)+'<div class="grow"><b>Bu tarayıcı kayıtları saklayamıyor</b>Gizli sekme kullanıyor olabilirsin. Kayıtlar sayfa kapanınca kaybolabilir.</div></div>';
@@ -2533,22 +2563,22 @@ function renderKasa(){
     const fee = lines.reduce((a,l)=>a+(l.fee||0),0), online = lines.filter(l=>l.k!=='card').reduce((a,l)=>a+(l.gross||0),0), card = lines.filter(l=>l.k==='card').reduce((a,l)=>a+(l.gross||0),0);
     html += '<div class="card section">'+daySummaryHtml({gross:cl.cash+card+online, cash:cl.cash, card, online, fee, exp:rec.exp})+'<button class="btn btn-in btn-lg btn-block" style="margin-top:14px" data-act="sharesum">'+ic('upload',19)+' Özeti paylaş</button></div>'+
       '<div class="card section"><div class="card-h"><h3 class="row">'+ic('check',18,2.4)+' Bu gün kapatıldı</h3><span class="muted">'+new Date(cl.ts).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'})+'</span></div>'+
-      '<div class="kasa-diff '+st+'"><span style="font-weight:650">'+(st==='ok'?'Kasa tam, fark yok':st==='short'?'Kasa açığı':'Kasa fazlası')+'</span><span class="num">'+money(cl.diff,{sign:true})+'</span></div>'+
+      (cl.noCount?'<div class="kasa-diff idle"><span style="font-weight:650">Kasa sayılmadan kapatıldı · Devreden kasa '+money(dayCarry(d))+'</span></div>':'<div class="kasa-diff '+st+'"><span style="font-weight:650">'+(st==='ok'?'Kasa tam, fark yok':st==='short'?'Kasa açığı':'Kasa fazlası')+'</span><span class="num">'+money(cl.diff,{sign:true})+'</span></div>')+
       '<div class="det-rows">'+[['Açılış nakdi',cl.open],['Nakit satış',cl.cash]].map(r=>'<div class="det-row"><span>'+r[0]+'</span><span class="num">'+money(r[1])+'</span></div>').join('')+
       lines.filter(l=>l.gross).map(l=>'<div class="det-row"><span>'+esc(l.name)+(l.rate!=null?' <small class="muted">%'+rateStr(l.rate)+'</small>':'')+'</span><span class="num">'+money(l.gross)+(l.fee?'<br><small class="muted">−'+money(l.fee)+' → '+money(l.gross-l.fee)+'</small>':'')+'</span></div>').join('')+
-      [['Gün içi nakit çıkış',-cl.out],['Kasada olması gereken',cl.expected],['Sayılan nakit',cl.counted]].map(r=>'<div class="det-row"><span>'+r[0]+'</span><span class="num">'+money(r[1])+'</span></div>').join('')+'</div>'+
+      [['Gün içi nakit çıkış',-cl.out],['Kasada olması gereken',cl.expected],['Sayılan nakit',cl.noCount?null:cl.counted]].map(r=>'<div class="det-row"><span>'+r[0]+'</span><span class="num">'+(r[1]==null?'Sayılmadı':money(r[1]))+'</span></div>').join('')+'</div>'+
       (cl.note?'<p class="muted" style="margin:14px 0 0">Not: '+esc(cl.note)+'</p>':'')+
       '<div class="row" style="margin-top:14px;gap:8px">'+byLine(cl)+'</div>'+
       (isAdmin()?'<button class="btn btn-secondary btn-block" style="margin-top:16px" data-act="reopen" data-id="'+cl.id+'">'+ic('undo',18)+' Kapanışı geri al</button>':'')+'</div>';
   } else {
-    const open = S.settings.lastOpen||0;
+    const oo = dayOpening(d), open = oo.v;
     const lines = kasaLines(rec);
     const field = (id,lbl,sub,val)=>'<div class="kasa-line"><label class="lbl" for="'+id+'">'+lbl+(sub?'<small>'+sub+'</small>':'')+'</label><input class="input" id="'+id+'" data-kin="1" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(val)+'" autocomplete="off"></div>';
     const kline = (l,i)=>'<div class="kline"><div class="kline-h"><label for="ka_'+i+'">'+esc(l.name)+'</label><small>Kayıtlarda: '+money(l.rec)+'</small></div>'+
       '<div class="kline-in"><input class="input money-in" id="ka_'+i+'" data-kin="1" data-line="'+i+'" inputmode="decimal" placeholder="0,00" value="'+moneyInputVal(l.rec)+'" autocomplete="off" aria-label="'+esc(l.name)+' brüt tutar">'+
       rateBox('kr_'+i, lastRate(l.k), 'Kom. %').replace('<input ','<input data-kin="1" data-rate="'+i+'" ')+'</div><div class="com-out" id="kc_'+i+'"></div></div>';
     html += '<div class="card section" id="kForm"><div class="card-h"><h3>Gün sonu sayımı</h3><span class="muted">Kayıtlardan dolduruldu</span></div>'+
-      field('kOpen','Açılış nakdi','Gün başında kasadaki bozuk para',open)+
+      field('kOpen','Açılış kasası', oo.src==='auto'?relDay(oo.from)+' kapanışından devreden':oo.src==='manual'?'Elle girildi (Defter)':'Gün başında kasadaki para',open)+
       field('kCash','Nakit satış','Kayıtlarda: '+money(rec.cash),rec.cash)+
       kline(lines[0],0)+
       '<div class="kgroup"><div class="kgroup-h">Online satışlar <small>Her platformun komisyonu ayrı</small></div>'+lines.slice(1).map((l,j)=>kline(l,j+1)).join('')+'</div>'+
@@ -2626,7 +2656,9 @@ async function closeDay(){
       else { const pid=l.k.slice(2); mk(amt, {c:onlineCat, m:'bank', plat:pid==='other'?null:pid, rate:l.rate, fee:f, net:amt-f}); } });
   }
   const lines = v.lines.map(l=>({k:l.k, name:l.name, gross:l.gross, rate:l.rate, fee:l.fee, net:l.net}));
-  const cl = stampNew({d, open:v.open, cash:v.cash, card, online, out:v.out, expected:exp, counted:v.counted, diff, note:$('#kNote').value.trim(), txIds:ids,
+  const autoOpen = dayOpening(d);
+  if(v.open !== autoOpen.v){ const dr={d, manual:true, open:v.open, byUid:ME.uid, byPid:ME.pid, byName:ME.name, ts:Date.now()}; S.days=Object.assign({},S.days,{[d]:dr}); dbSet(['days',d], dr, false, 'Açılış kasası').catch(()=>{}); }
+  const cl = stampNew({d, open:v.open, cash:v.cash, card, online, out:v.out, expected:exp, carry:exp, counted:v.counted, diff, note:$('#kNote').value.trim(), txIds:ids,
     lines, fee, gross, netIncome:gross-fee, exp:rec.exp, profit:gross-fee-rec.exp});
   S.closings = S.closings.filter(c=>c.id!==d).concat([Object.assign({id:d},cl)]);
   dbSet(['closings',d], cl, false, 'Gün kapanışı').catch(()=>{});
@@ -2882,6 +2914,8 @@ function renderSettings(){
     li('changepin','lock','PIN’imi değiştir','6 haneli giriş PIN’in')+
     li('switchuser','users','Kullanıcı değiştir / Çıkış','“Kim giriyor?” ekranına döner')+'</div></div>'+
   (isAdmin()?'<div class="set-group"><h3>Veri</h3><div class="set-card">'+li('csv','file','Excel için CSV indir','Yüklü kayıtlar (son iki ay ve açtığın eski dönemler)','')+'</div></div>':'')+
+  '<div class="set-group"><h3>WhatsApp günlük raporu</h3><div class="set-card">'+li(isAdmin()?'panel':'noop','upload','Ortak telefon numarası',(waCfg().phone?esc(waCfg().phone):'Kayıtlı değil · WhatsApp kişi seçtirir')+(isAdmin()?' · değiştirmek için Yönetici paneli → WhatsApp günlük raporu':''),isAdmin()?null:'')+'</div></div>'+
+  (isAdmin()?'<div class="set-group"><h3>Teslim öncesi temizlik</h3><div class="set-card">'+li('wipeinfo','trash','Test verilerini sil','Yönetici paneli şifresiyle açılır · Panel → Teslim öncesi temizlik')+'</div></div>':'')+
   '<div class="set-group"><h3>Yönetim</h3><div class="set-card">'+li('panel','shield','Yönetici paneli','Kullanıcılar, kategoriler, işletme ayarları · yönetici şifresi ister')+li('tour','info','Tanıtımı tekrar göster','','')+'</div></div>'+
   '<div class="set-group"><h3>Hakkında</h3><div class="set-card" style="padding:16px;font-size:calc(14px*var(--fs,1));color:var(--text-2);line-height:1.7">'+
     NF0.format(S.tx.length)+' kayıt yüklü · '+S.suppliers.length+' tedarikçi · '+S.closings.length+' kapanış<br>Veriler Firebase’de saklanır ve dükkandaki tüm telefonlarda anlık eşitlenir. İnternet yokken de kayıt girebilirsin; bağlantı gelince kendiliğinden gönderilir.<br><span class="desk-only">Kısayollar: <kbd>N</kbd> yeni kayıt · <kbd>/</kbd> arama · <kbd>Esc</kbd> kapat</span></div></div>';
@@ -3442,6 +3476,215 @@ function editStaff(id, opts){
 }
 
 /* =========================================================
+   GÜNLÜK DEFTER: hızlı gider girişi, günün kalemleri, kasa devri, WhatsApp raporu
+   Kasa kuralı: Açılış kasası + nakit satışlar − kasadan ödenen giderler = Gün sonu kasası.
+   Açılış kasası = son kapatılan günün gün sonu kasası (canlı hesaplanır; o gün sonradan
+   düzenlenirse devreden kasa kendiliğinden yeniden hesaplanır). Elle değiştirilirse "days/{gün}"
+   belgesine yazılır ve tüm telefonlarda eşitlenir.
+   ========================================================= */
+UI.ledgerDate = UI.ledgerDate || null;
+function ledgerDay(){ return UI.ledgerDate || today(); }
+function closingOn(d){ return S.closings.find(c=>c.d===d && !c.deleted) || null; }
+function prevClosing(d){ let best=null; for(const c of S.closings){ if(!c.deleted && c.d<d && (!best || c.d>best.d)) best=c; } return best; }
+function dayCarry(d, depth){ const o = dayOpening(d, (depth||0)+1), r = kasaRecorded(d); return o.v + r.cash - r.out; }
+function dayOpening(d, depth){
+  depth = depth||0;
+  const ov = (S.days||{})[d];
+  if(ov && ov.manual && typeof ov.open==='number') return {v:ov.open, src:'manual'};
+  const p = prevClosing(d);
+  if(!p){ const cl=closingOn(d); return {v: cl && typeof cl.open==='number' ? cl.open : 0, src:'none'}; }
+  if(depth>90 || (loadedFrom && p.d<loadedFrom)) return {v: typeof p.carry==='number' ? p.carry : (p.expected||0), src:'auto', from:p.d};
+  return {v: dayCarry(p.d, depth), src:'auto', from:p.d};
+}
+function ledgerExpenses(d){ return S.tx.filter(x=>x.t==='out' && x.d===d).sort((a,b)=>(a.ts||0)-(b.ts||0)); }
+function ledgerState(d){
+  const r = kasaRecorded(d), o = dayOpening(d), cl = closingOn(d);
+  const online = r.online, carry = o.v + r.cash - r.out;
+  const exps = ledgerExpenses(d), total = exps.reduce((a,x)=>a+x.a,0);
+  return {r, o, cl, online, carry, exps, total};
+}
+
+/* ---------- Ekran ---------- */
+function renderLedger(){
+  const d = ledgerDay(), L = ledgerState(d), dt = toDate(d);
+  setTop(VIEWS.ledger.t, esc(relDayLong(d)));
+  needFrom(d);
+  const timeOf = x=>x.ts ? new Date(x.ts).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}) : '';
+  let html = '<div class="card no-print" style="padding:10px"><div class="row"><button class="icon-btn" data-lday="-1" aria-label="Önceki gün">'+ic('chevL',22)+'</button>'+
+    '<div style="flex:1;text-align:center"><div style="font-weight:700;font-size:calc(17px*var(--fs,1))">'+esc(relDay(d)==='Bugün'||relDay(d)==='Dün'?relDay(d):DAYS[dt.getDay()])+'</div><div class="muted" style="font-size:calc(13px*var(--fs,1))">'+esc(longDate(d))+'</div></div>'+
+    '<button class="icon-btn" data-lday="1" aria-label="Sonraki gün"'+(d>=today()?' disabled style="opacity:.3"':'')+'>'+ic('chevR',22)+'</button>'+
+    '<label class="icon-btn" style="position:relative;overflow:hidden" aria-label="Tarih seç">'+ic('calendar',21)+'<input type="date" id="lDatePick" value="'+d+'" max="'+today()+'" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label></div></div>';
+  html += '<div class="ledger-cta section"><button class="btn btn-danger btn-lg" data-act="quickexp">'+ic('minus',22,2.6)+' Gider Ekle</button><button class="btn btn-secondary btn-lg" data-act="quicksale">'+ic('plus',20,2.4)+' Satış</button></div>';
+  // giderler
+  html += '<div class="card section"><div class="card-h"><h3>Giderler</h3><span class="muted">'+L.exps.length+' kalem</span></div>'+
+    (L.exps.length ? '<div class="ledger-list">'+L.exps.map(x=>{ const c=catById(x.c);
+      return '<button class="lrow" style="--by:'+personColor(x.byPid)+'" data-id="'+x.id+'"><span class="lt">'+esc(timeOf(x))+'</span><span class="lm"><b>'+esc(x.desc||c.name)+'</b><small>'+esc(c.name)+(x.m==='cash'?'':' · '+esc(METHOD_SHORT[x.m]||''))+'</small><small>'+byLine(x)+'</small></span><span class="la num">'+money(x.a)+'</span></button>'; }).join('')+'</div>'+
+      '<div class="ledger-total"><span>Toplam gider</span><b class="num">'+money(L.total)+'</b></div>'+(L.total!==L.r.out?'<div class="muted" style="font-size:calc(12.5px*var(--fs,1));text-align:right;margin-top:2px">Kasadan ödenen: '+money(L.r.out)+'</div>':'')
+      : '<div class="empty" style="padding:14px 8px"><p style="margin:0">Bu gün için gider yazılmamış. “Gider Ekle”ye bas, defterdeki gibi kalem kalem yaz.</p></div>')+'</div>';
+  // kasa
+  const oLbl = L.o.src==='manual' ? 'Elle girildi' : L.o.src==='auto' ? relDay(L.o.from)+' kapanışından devreden' : 'Önceki kapanış yok';
+  html += '<div class="card section"><div class="card-h"><h3>Kasa</h3>'+(L.cl?'<span class="pill" style="background:var(--in-bg);color:var(--in)">Gün kapatıldı</span>':'')+'</div>'+
+    '<div class="ds-row"><span>Açılış kasası<small style="display:block">'+esc(oLbl)+'</small></span><span class="row" style="gap:6px"><b class="num">'+money(L.o.v)+'</b>'+(can('closeDay')?'<button class="icon-btn" data-act="editopen" aria-label="Açılış kasasını değiştir">'+ic('edit',18)+'</button>':'')+'</span></div>'+
+    '<div class="ds-row"><span>+ Nakit satış</span><span class="num" style="color:var(--in)">'+money(L.r.cash)+'</span></div>'+
+    '<div class="ds-row minus"><span>− Kasadan ödenen giderler</span><span class="num">−'+money(L.r.out)+'</span></div>'+
+    '<div class="ds-total pos" style="background:var(--surface-2);color:var(--text)"><span>GÜN SONU KASASI</span><b class="num">'+money(L.carry)+'</b></div>'+
+    '<div class="muted" style="font-size:calc(12.5px*var(--fs,1));margin-top:8px">Kasaya girmeyen satışlar: Kart '+money(L.r.card)+' · Online '+money(L.online)+'</div>'+
+    (L.cl ? '<div class="field" style="margin-top:14px"><span class="label">Kasada sayılan para</span><div class="num" style="font-size:calc(18px*var(--fs,1));font-weight:700">'+(L.cl.noCount?'<span class="muted">Sayılmadı</span>':money(L.cl.counted))+'</div></div>'+
+        (!L.cl.noCount?diffBox(L.cl.counted-L.carry):'')+
+        '<div class="banner info" style="margin-top:12px">'+ic('check',20,2.4)+'<div class="grow"><b>Yarına devreden kasa: '+money(L.carry)+'</b>Bu günde değişiklik yapılırsa devreden kasa kendiliğinden yeniden hesaplanır.</div></div>'+
+        (isAdmin()?'<button class="btn btn-ghost btn-block" style="margin-top:8px" data-act="reopen" data-id="'+L.cl.id+'">'+ic('undo',18)+' Kapanışı geri al</button>':'')
+      : '<div class="field" style="margin-top:14px"><label for="lCount">Kasada sayılan para <span class="muted">(isteğe bağlı)</span></label><input class="input" id="lCount" inputmode="decimal" placeholder="Kasadaki parayı say ve yaz" style="min-height:56px;font-size:calc(20px*var(--fs,1));font-weight:700;text-align:center" value="'+esc((UI.lCount||{})[d]||'')+'" autocomplete="off"></div><div id="lDiff"></div>'+
+        (can('closeDay')?'<button class="btn btn-primary btn-lg btn-block" style="margin-top:14px" data-act="ledgerclose">'+ic('lock',19)+' Günü Kapat</button>':'<p class="muted" style="font-size:calc(13px*var(--fs,1));text-align:center">Günü kapatma iznin yok.</p>'))+
+    '</div>';
+  html += '<div class="cta-bar"><button class="btn btn-wa btn-lg btn-block" data-act="ledgerwa">'+waIcon()+' WhatsApp’ta Gönder</button></div>';
+  $('#view').innerHTML = html;
+  const dp=$('#lDatePick'); if(dp) dp.addEventListener('change',()=>{ if(dp.value){ UI.ledgerDate = dp.value>today()?today():dp.value; renderLedger(); } });
+  const lc=$('#lCount'); if(lc){ const upd=()=>{ UI.lCount=UI.lCount||{}; UI.lCount[d]=lc.value; const v=parseMoney(lc.value); $('#lDiff').innerHTML = lc.value.trim() && !isNaN(v) ? diffBox(v-L.carry) : ''; }; lc.addEventListener('input',upd); upd(); }
+}
+function diffBox(diff){ const st=diff===0?'ok':diff<0?'short':'over'; return '<div class="kasa-diff '+st+'"><span style="font-weight:650">'+(st==='ok'?'Kasa tam, fark yok':st==='short'?'Kasa eksik':'Kasa fazla')+'</span><span class="num">'+money(diff,{sign:true})+'</span></div>'; }
+function waIcon(){ return '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.2-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.8 11.9 11.9 0 0 0 4.6 4c1.7.7 2.3.8 3.2.7a2.7 2.7 0 0 0 1.8-1.3 2.2 2.2 0 0 0 .2-1.3c-.1-.1-.3-.2-.5-.3z"/></svg>'; }
+
+/* ---------- Açılış kasasını değiştir ---------- */
+function openEditOpening(){
+  const d = ledgerDay(), o = dayOpening(d), ov = (S.days||{})[d];
+  const auto = (()=>{ const p=prevClosing(d); return p ? dayCarry(p.d) : 0; })();
+  const sh = openSheet({title:'Açılış kasası', body:'<p class="muted" style="margin:0 0 12px">'+esc(longDate(d))+'. Otomatik değer: <b>'+money(auto)+'</b>'+(prevClosing(d)?' ('+esc(relDay(prevClosing(d).d))+' kapanışından)':'')+'</p>'+
+    '<div class="field"><label for="eoA">Açılış kasası (₺)</label><input class="input st-amt-in" id="eoA" inputmode="decimal" value="'+moneyInputVal(o.v)+'" autocomplete="off"></div>',
+    foot:(ov&&ov.manual?'<button class="btn btn-secondary btn-lg" data-eo="auto">Otomatiğe dön</button>':'')+'<button class="btn btn-primary btn-lg" data-eo="save">Kaydet</button>', focus:'#eoA'});
+  sh.el.addEventListener('click',e=>{
+    const b=e.target.closest('[data-eo]'); if(!b) return;
+    let patch;
+    if(b.dataset.eo==='auto') patch={manual:false, open:null};
+    else { const v=parseMoney($('#eoA',sh.el).value); if(isNaN(v)||v<0){ toast('Geçerli bir tutar yaz','error'); return; } patch={manual:true, open:v}; }
+    const rec = Object.assign({d}, patch, {byUid:ME.uid, byPid:ME.pid, byName:ME.name, ts:Date.now()});
+    S.days = Object.assign({}, S.days, {[d]:rec});
+    dbSet(['days',d], rec, false, 'Açılış kasası').catch(()=>{});
+    audit('açılış kasası','gün',d,ov||null,rec);
+    sh.close(); renderView(); toast(patch.manual?'Açılış kasası '+money(patch.open)+' olarak kaydedildi':'Açılış kasası otomatiğe döndü','success');
+  });
+}
+
+/* ---------- Günü kapat (defterden) ---------- */
+async function ledgerCloseDay(){
+  const d = ledgerDay(), L = ledgerState(d);
+  if(L.cl){ toast('Bu gün zaten kapatılmış','info'); return; }
+  const raw = ($('#lCount')||{}).value||''; const counted = raw.trim() ? parseMoney(raw) : null;
+  if(raw.trim() && (isNaN(counted)||counted<0)){ toast('Sayılan parayı sayı olarak yaz','error'); return; }
+  const diff = counted==null ? 0 : counted-L.carry;
+  const ok = await confirmDialog({title:'Gün kapatılsın mı?', icon:'lock', ok:'Günü Kapat',
+    text:'Gün sonu kasası: <b>'+money(L.carry)+'</b><br>Bu tutar yarının açılış kasası olur.'+(counted==null?'':'<br>'+(diff===0?'Kasa tam.':diff<0?'Kasa eksik: <b>'+money(diff)+'</b>':'Kasa fazla: <b>'+money(diff,{sign:true})+'</b>'))});
+  if(!ok) return;
+  const rec = L.r;
+  const sumKey = k=>S.tx.filter(x=>x.d===d && x.t==='in' && txComKey(x)===k);
+  const lines = kasaLines(rec).map(l=>{ const xs=sumKey(l.k); const fee=xs.reduce((a,x)=>a+(x.fee||0),0); const rates=[...new Set(xs.filter(x=>x.rate!=null).map(x=>x.rate))];
+    return {k:l.k, name:l.name, gross:l.rec, rate:rates.length===1?rates[0]:null, fee, net:l.rec-fee}; });
+  const card = lines.filter(l=>l.k==='card').reduce((a,l)=>a+l.gross,0), online = lines.filter(l=>l.k!=='card').reduce((a,l)=>a+l.gross,0);
+  const fee = lines.reduce((a,l)=>a+l.fee,0), gross = rec.cash+card+online;
+  const cl = stampNew({d, open:L.o.v, cash:rec.cash, card, online, out:rec.out, expected:L.carry, carry:L.carry, counted:counted==null?L.carry:counted, noCount:counted==null, diff,
+    note:'', txIds:[], lines, fee, gross, netIncome:gross-fee, exp:rec.exp, profit:gross-fee-rec.exp, via:'defter'});
+  S.closings = S.closings.filter(c=>c.id!==d).concat([Object.assign({id:d},cl)]);
+  dbSet(['closings',d], cl, false, 'Gün kapanışı').catch(()=>{});
+  audit('gün kapattı','kapanış',d,null,cl);
+  if(UI.lCount) delete UI.lCount[d];
+  renderView(); window.scrollTo({top:0,behavior:'smooth'});
+  toast('Gün kapatıldı · Yarına devreden kasa '+money(L.carry),'success',{duration:4000});
+}
+
+/* ---------- Hızlı gider girişi ---------- */
+function openQuickExpense(){
+  const d = (UI.view==='ledger') ? ledgerDay() : today();
+  const hist = descHistory().filter(e=>e.t==='out').sort((a,b)=>b.n-a.n);
+  let cat = null, fromCash = true, added = [];
+  const freq = hist.slice(0,8);
+  const catChips = ()=>catsOf('out').map(c=>'<button type="button" class="chip'+(cat===c.id?' on':'')+'" data-qc="'+c.id+'"><i class="dot" style="background:'+c.color+'"></i>'+esc(c.name)+'</button>').join('');
+  const addedHtml = ()=> added.length ? '<div class="q-added"><div class="card-h" style="margin:0 0 6px"><h3 style="font-size:calc(14px*var(--fs,1))">Bu oturumda eklenenler</h3><b class="num">'+money(added.reduce((a,x)=>a+x.a,0))+'</b></div>'+added.slice().reverse().map(x=>'<div class="who-row"><span class="grow">'+esc(x.desc)+'</span><span class="num">'+money(x.a)+'</span></div>').join('')+'</div>' : '';
+  const body = '<p class="muted" style="margin:0 0 10px;font-size:calc(13.5px*var(--fs,1))">'+esc(relDayLong(d))+' defterine yazılır.</p>'+
+    '<div class="field"><label for="qDesc">Ne için?</label><div class="ac"><input class="input q-desc" id="qDesc" placeholder="Örn: Kola, Ekmek, Et" maxlength="60" autocomplete="off" enterkeyhint="next"></div></div>'+
+    (freq.length?'<div class="sugg" id="qFreq">'+freq.map((e,i)=>'<button type="button" data-qf="'+i+'">'+esc(e.desc)+'</button>').join('')+'</div>':'')+
+    '<div class="field" style="margin-top:12px"><label for="qAmt">Tutar (₺)</label><input class="input st-amt-in" id="qAmt" inputmode="decimal" placeholder="0" autocomplete="off" enterkeyhint="done"></div>'+
+    '<button type="button" class="perm" id="qCash" role="switch" aria-checked="true" style="margin-top:6px"><div class="grow"><div style="font-weight:650">Kasadan ödendi</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))" id="qCashS">Kasadaki paradan düşülür</div></div><span class="switch on"></span></button>'+
+    '<details class="q-cat"><summary>Kategori <span class="muted" id="qCatName">(isteğe bağlı · otomatik)</span></summary><div class="chips wrap" id="qCats" style="margin-top:10px">'+catChips()+'</div></details>'+
+    '<div id="qAdded">'+addedHtml()+'</div>';
+  const sh = openSheet({title:'Gider Ekle', body, foot:'<button class="btn btn-secondary btn-lg" data-qs="close">Kaydet ve kapat</button><button class="btn btn-danger btn-lg" data-qs="next">'+ic('plus',19,2.4)+' Kaydet ve yeni ekle</button>', focus:'#qDesc',
+    isDirty:()=>($('#qDesc',sh.el).value.trim()!=='' || $('#qAmt',sh.el).value.trim()!=='')});
+  const descIn = $('#qDesc',sh.el), amtIn = $('#qAmt',sh.el);
+  const guessCat = desc=>{ const h=hist.find(e=>trLower(e.desc)===trLower(desc.trim())); if(h && S.cats.some(c=>c.id===h.c)) return h.c;
+    const q=QUICK.out.find(x=>trLower(desc).indexOf(trLower(x[0]))>-1); if(q && S.cats.some(c=>c.id===q[1])) return q[1];
+    const KW=[[/kola|ayran|su\b|içecek|meyve suyu|soda|çay|şalgam/,'c_ice'],[/ekmek|lavaş|pide|somun/,'c_ekm'],[/\bet\b|kıyma|tavuk|kuzu|dana|döner eti/,'c_et'],[/domates|soğan|biber|marul|maydanoz|sebze|patates|yağ|baharat|sos/,'c_seb'],[/tüp|gaz|elektrik|su faturası|fatura/,'c_fat'],[/benzin|mazot|yakıt|kurye/,'c_kur'],[/poşet|ambalaj|kağıt|peçete|folyo|kutu/,'c_amb'],[/kira/,'c_kir']];
+    const l=trLower(desc); for(const [re,c] of KW){ if(re.test(l) && S.cats.some(x=>x.id===c)) return c; } return null; };
+  const showCat = ()=>{ const id = cat || guessCat(descIn.value); $('#qCatName',sh.el).textContent = id ? '· '+catById(id).name+(cat?'':' (otomatik)') : '(isteğe bağlı · otomatik)'; };
+  attachAC(descIn, q=>{ q=trLower(q.trim()); return hist.filter(e=>(!q||trLower(e.desc).indexOf(q)>-1) && trLower(e.desc)!==q).map(e=>({label:e.desc, value:e.desc, meta:catById(e.c).name})); }, ()=>{ showCat(); amtIn.focus(); });
+  descIn.addEventListener('input', showCat);
+  descIn.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); amtIn.focus(); } });
+  amtIn.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); save(true); } });
+  sh.el.addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.qf){ descIn.value = freq[+b.dataset.qf].desc; showCat(); amtIn.focus(); }
+    else if(b.dataset.qc){ cat = cat===b.dataset.qc ? null : b.dataset.qc; $('#qCats',sh.el).innerHTML = catChips(); showCat(); }
+    else if(b.id==='qCash'){ fromCash=!fromCash; b.setAttribute('aria-checked',fromCash); b.querySelector('.switch').classList.toggle('on',fromCash); $('#qCashS',sh.el).textContent = fromCash?'Kasadaki paradan düşülür':'Kasaya dokunmaz (havale, kart vb.)'; }
+    else if(b.dataset.qs) save(b.dataset.qs==='next');
+  });
+  function save(again){
+    const desc = descIn.value.trim(), a = parseMoney(amtIn.value);
+    if(!desc){ toast('Ne için olduğunu yaz (örn. Kola)','error'); descIn.focus(); return; }
+    if(isNaN(a)||a<=0){ toast('Tutarı yaz','error'); amtIn.focus(); return; }
+    if(a>=100000000){ toast('Tutar çok yüksek görünüyor','error'); return; }
+    const c = cat || guessCat(desc) || (S.cats.find(x=>x.id==='c_dgd') ? 'c_dgd' : catsOf('out').slice(-1)[0].id);
+    const r = dbAddTx({t:'out', a, c, m:fromCash?'cash':'bank', d, desc, note:'', sup:null});
+    UI.justAdded = r.id; added.push({desc, a});
+    if(!hist.some(e=>trLower(e.desc)===trLower(desc))) hist.unshift({desc, t:'out', n:1, c});
+    renderView();
+    toast(desc+' · '+money(a)+' yazıldı','success',{duration:1800});
+    if(again){ descIn.value=''; amtIn.value=''; cat=null; $('#qCats',sh.el).innerHTML=catChips(); showCat(); $('#qAdded',sh.el).innerHTML=addedHtml(); sh.el._snap=snapInputs(sh.el); descIn.focus(); }
+    else sh.close();
+  }
+}
+
+/* ---------- WhatsApp raporu ---------- */
+function waCfg(){ return Object.assign({phone:'', cash:true, cardOnline:true, count:true}, (S.config&&S.config.wa)||{}); }
+function waMoney(k){ return (k%100===0 ? NF0.format(k/100) : NF.format(k/100))+' ₺'; }
+function waPhone(p){ let s=String(p||'').replace(/\D/g,''); if(!s) return ''; if(s.indexOf('00')===0) s=s.slice(2); if(s.length===11 && s[0]==='0') s='90'+s.slice(1); else if(s.length===10 && s[0]==='5') s='90'+s; return s.length>=10 ? s : ''; }
+function ledgerReport(d){
+  const L = ledgerState(d), w = waCfg(), out = [];
+  out.push('📅 '+trDate(d)+' Günlük Rapor');
+  if(S.settings.biz) out.push('🏪 '+S.settings.biz);
+  out.push('💰 Açılış kasası: '+waMoney(L.o.v));
+  if(w.cash) out.push('🛒 Nakit satış: '+waMoney(L.r.cash));
+  if(w.cardOnline){ out.push('💳 Kart satış: '+waMoney(L.r.card)); out.push('📱 Online satış: '+waMoney(L.online)); }
+  out.push('');
+  out.push('🧾 Giderler:');
+  if(L.exps.length) L.exps.forEach(x=>out.push('• '+(x.desc||catById(x.c).name).replace(/\s+/g,' ')+' — '+waMoney(x.a)+(x.m==='cash'?'':' ('+(METHOD_SHORT[x.m]||'')+')')));
+  else out.push('• Gider yok');
+  out.push('Toplam gider: '+waMoney(L.total));
+  out.push('');
+  if(w.count && L.cl && !L.cl.noCount){ const df=L.cl.counted-L.carry; out.push('🔎 Sayılan kasa: '+waMoney(L.cl.counted)+(df?' ('+(df>0?'+':'−')+waMoney(Math.abs(df))+' fark)':'')); }
+  else if(w.count && !L.cl){ const v=parseMoney(((UI.lCount||{})[d])||''); if(!isNaN(v)){ const df=v-L.carry; out.push('🔎 Sayılan kasa: '+waMoney(v)+(df?' ('+(df>0?'+':'−')+waMoney(Math.abs(df))+' fark)':'')); } }
+  out.push('✅ Yarına devreden kasa: '+waMoney(L.carry)+(L.cl?'':' (gün kapatılmadı)'));
+  return out.join('\n');
+}
+function waLink(text){ const ph = waPhone(waCfg().phone); return 'https://wa.me/'+(ph||'')+'?text='+encodeURIComponent(text); }
+function ledgerSendWA(){
+  const d = ledgerDay(), text = ledgerReport(d), url = waLink(text);
+  UI.lastWa = {text, url};
+  const a = document.createElement('a'); a.href=url; a.target='_blank'; a.rel='noopener'; document.body.appendChild(a); a.click(); a.remove();
+  audit('whatsapp rapor','gün',d,null,null);
+}
+function openWaSettings(){
+  const w = waCfg();
+  const T = Object.assign({}, w);
+  const sw = (k,t,s)=>'<button type="button" class="perm" data-wt="'+k+'" role="switch" aria-checked="'+!!T[k]+'"><div class="grow"><div style="font-weight:650">'+t+'</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">'+s+'</div></div><span class="switch'+(T[k]?' on':'')+'"></span></button>';
+  const sh = openSheet({title:'WhatsApp günlük raporu', body:'<div class="field"><label for="waP">Ortak telefon numarası <span class="muted">(isteğe bağlı)</span></label><input class="input" id="waP" type="tel" inputmode="tel" placeholder="05xx xxx xx xx" value="'+esc(w.phone)+'"><span class="muted" style="font-size:calc(12.5px*var(--fs,1))">Kayıtlıysa “WhatsApp’ta Gönder” doğrudan bu kişiyi açar. Boşsa WhatsApp kişi seçtirir.</span></div>'+
+    '<div class="form-sec"><span class="label">Rapora eklenecekler</span><div class="set-card" style="padding:0 14px">'+sw('cash','Nakit satış','🛒 satır')+sw('cardOnline','Kart ve online satış','💳 📱 satırları')+sw('count','Sayılan kasa ve fark','Kasa sayıldıysa 🔎 satırı')+'</div><p class="muted" style="font-size:calc(12.5px*var(--fs,1));margin:6px 0 0">Açılış kasası, giderler ve yarına devreden kasa her zaman yer alır.</p></div>',
+    foot:'<button class="btn btn-primary btn-lg" data-wsave="1">Kaydet</button>', focus:'#waP'});
+  sh.el.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.wt){ T[b.dataset.wt]=!T[b.dataset.wt]; b.setAttribute('aria-checked',T[b.dataset.wt]); b.querySelector('.switch').classList.toggle('on',T[b.dataset.wt]); }
+    if(b.dataset.wsave){ const p=$('#waP',sh.el).value.trim(); if(p && !waPhone(p)){ toast('Telefon numarası geçersiz (örn. 0532 123 45 67)','error'); return; }
+      setConfig({wa:{phone:p, cash:!!T.cash, cardOnline:!!T.cardOnline, count:!!T.count}},'WhatsApp raporu'); sh.close(); renderView(); toast('Kaydedildi','success'); }
+  });
+}
+
+/* =========================================================
    YÖNETİCİ PANELİ (Parça 1): kullanıcılar, davet, işletme, kategoriler
    ========================================================= */
 const PERMS = [
@@ -3477,10 +3720,12 @@ function renderPanel(){
     '<div class="field"><label for="setBiz">İşletme adı</label><input class="input" id="setBiz" value="'+esc(S.settings.biz)+'" maxlength="40"></div>'+
     '<div class="field" style="margin-top:14px"><span class="label">Para birimi gösterimi</span><div class="seg">'+[['sym','1.250,50 ₺'],['pre','₺1.250,50'],['tl','1.250,50 TL']].map(c=>'<button class="'+(S.settings.cur===c[0]?'on':'')+'" data-cur="'+c[0]+'">'+c[1]+'</button>').join('')+'</div></div></div></div>'+
   '<div class="set-group"><h3>Kayıt ayarları</h3><div class="set-card">'+
+    li('waset','upload','WhatsApp günlük raporu',(waCfg().phone?'Ortak: '+esc(waCfg().phone):'Ortak numarası kayıtlı değil')+' · rapor içeriği')+
     li('platforms','phone','Online platformlar ve komisyon',platforms().length+' platform · kart ve platform varsayılan oranları')+
     li('cats','tag','Kategoriler',S.cats.length+' kategori · ekle, yeniden adlandır, sil, sırala, ikon ve renk')+
     li('recurring','repeat','Tekrarlayan giderler',S.recurring.length?S.recurring.length+' kalem · her ay yöneticilere hatırlatılır':'Kira, elektrik, maaş gibi')+
     li('budgets','target','Aylık bütçe limitleri',catsOf('out').filter(c=>c.budget>0).length+' kategoride limit var')+'</div></div>'+
+  '<div class="set-group"><h3>Teslim öncesi temizlik</h3><div class="set-card">'+li('wipe','trash','<span style="color:var(--out)">Test verilerini sil</span>','Tüm kayıtlar, gün sonları, cari, personel ve geçmiş silinir; giriş, kategoriler ve ayarlar kalır')+'</div></div>'+
   '<div class="set-group"><h3>Bu cihaz</h3><div class="set-card">'+li('changecfg','settings','Firebase ayarlarını değiştir',usingEmbedded()?'Şu an gömülü ayar: '+esc(EMBED_CFG.projectId)+' · başka müşteri kurulumu için':'Şu an özel ayar: '+esc(activeCfg().projectId))+li('resetdevice','alert','Bu cihazı dükkandan ayır','Firebase ayarlarını ve kayıtlı giriş bilgilerini bu telefondan siler. Veriler silinmez.')+'</div></div>';
   $('#view').innerHTML = html;
   const bi = $('#setBiz'); bi.addEventListener('change',()=>{ const v=bi.value.trim(); if(!v) return; setConfig({biz:v},'İşletme adı'); dbSet(['public','roster'],{biz:v},true,'Liste').catch(()=>{}); lsSet(LS.roster, Object.assign(lsGet(LS.roster,{}),{biz:v})); toast('İşletme adı kaydedildi','success'); });
@@ -3660,6 +3905,101 @@ async function openTrash(){
     x.deleted=false; draw(); renderView();
     toast('Geri yüklendi · '+money(x.a)+' tekrar toplamlarda','success');
   });
+}
+
+/* ---------- Teslim öncesi temizlik (sadece Yönetici Paneli hesabı) ---------- */
+const WIPE_COLS = [
+  ['tx','Gelir / gider kayıtları'], ['ptx','Personel ödemeleri (maaş, avans, prim, mesai)'], ['payroll','Hakediş kayıtları (maaşa eklenen mesai/prim, kesinti)'],
+  ['staff','Personel kartları'], ['closings','Gün sonu kapanışları'], ['suppliers','Cari kartları (tedarikçiler)'], ['payments','Cari ödemeleri'],
+  ['photos','Fiş fotoğrafları'], ['days','Elle girilen açılış kasaları'], ['audit','İşlem geçmişi (denetim günlüğü)']
+];
+async function wipeSnapshot(){
+  const out = {};
+  const rs = await Promise.all(WIPE_COLS.map(c=>FB.getDocs(C(c[0]))));
+  rs.forEach((r,i)=>{ out[WIPE_COLS[i][0]] = r.docs.map(d=>({id:d.id, ref:d.ref, data:d.data()})); });
+  return out;
+}
+async function openWipe(){
+  if(!ME.owner){ toast('Bu bölüm sadece Yönetici Paneli hesabıyla açılır','error'); return; }
+  const sh = openSheet({title:'Teslim Öncesi Temizlik', noDirty:true, body:'<p class="muted" id="wpInfo">Kayıtlar sayılıyor…</p>'});
+  let snap;
+  try{ snap = await wipeSnapshot(); }catch(e){ $('#wpInfo',sh.el).textContent='Kayıtlar okunamadı. İnternet bağlantısını ve güvenlik kurallarının güncel olduğunu kontrol et.'; return; }
+  if(sh.closed) return;
+  const others = S.people.filter(p=>p.role!=='admin');
+  let delUsers = false;
+  const total = ()=>WIPE_COLS.reduce((a,c)=>a+snap[c[0]].length,0);
+  const body = ()=>'<div class="banner danger" style="margin-bottom:14px">'+ic('alert',22)+'<div class="grow"><b>Geri alınamaz</b>Dükkanı müşteriye teslim etmeden önce test verilerini kalıcı olarak siler. Silmeden önce tüm veriler otomatik olarak yedek dosyası olarak indirilir.</div></div>'+
+    '<div class="set-group" style="margin-top:0"><h3>Silinecekler · '+NF0.format(total())+' kayıt</h3><div class="set-card" style="padding:4px 16px">'+
+      WIPE_COLS.map(c=>'<div class="who-row"><span class="grow" style="font-weight:600">'+esc(c[1])+'</span><b class="num">'+NF0.format(snap[c[0]].length)+'</b></div>').join('')+
+      '<div class="who-row"><span class="grow" style="font-weight:600">Silinenler (çöp kutusu)</span><span class="muted">yukarıdakilerle birlikte</span></div></div></div>'+
+    '<div class="set-group"><h3>Kalacaklar</h3><div class="set-card" style="padding:12px 16px;font-size:calc(14.5px*var(--fs,1));line-height:1.7">'+ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' Yönetici hesabı ve giriş bilgileri<br>'+
+      ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' Kategoriler, online platformlar ve komisyon oranları<br>'+
+      ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' İşletme adı, para birimi, tekrarlayan giderler ve bütçe ayarları<br>'+
+      ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' Yönetici rolündeki kullanıcılar ('+esc(S.people.filter(p=>p.role==='admin').map(p=>p.name).join(', ')||'—')+')</div></div>'+
+    '<div class="set-group"><h3>İsteğe bağlı</h3><div class="set-card"><button type="button" class="perm" id="wpUsers" role="switch" aria-checked="'+delUsers+'"'+(others.length?'':' disabled')+'><div class="grow"><div style="font-weight:650">Test kullanıcılarını da sil</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">'+(others.length?'Yönetici hariç '+others.length+' kullanıcı: '+esc(others.map(p=>p.name).join(', '))+'. Giriş yetkileri ve PIN’leri kaldırılır.':'Silinecek çalışan kullanıcı yok.')+'</div></div><span class="switch'+(delUsers?' on':'')+'"></span></button></div></div>'+
+    '<div id="wpProg"></div>';
+  const foot = '<button class="btn btn-danger btn-lg" id="wpGo">'+ic('trash',19)+' Temizliği başlat</button>';
+  sh.el.querySelector('.sheet-b').innerHTML = body();
+  sh.el.insertAdjacentHTML('beforeend','<div class="sheet-f">'+foot+'</div>');
+  sh.el.addEventListener('click', e=>{ const b=e.target.closest('#wpUsers'); if(!b||b.disabled) return; delUsers=!delUsers; b.setAttribute('aria-checked',delUsers); b.querySelector('.switch').classList.toggle('on',delUsers); });
+  $('#wpGo',sh.el).onclick = async ()=>{
+    const n = total() + (delUsers?others.length:0);
+    // 1) uyarı + SIL yazma
+    const ok1 = await confirmDialog({title:'Geri alınamaz!', danger:true, icon:'alert', ok:'Devam',
+      text:'<b>'+NF0.format(total())+' kayıt</b>'+(delUsers?' ve <b>'+others.length+' kullanıcı</b>':'')+' kalıcı olarak silinecek. Bu işlem geri alınamaz.<br>Onaylamak için kutuya <b>SIL</b> yaz.',
+      extra:'<input class="input" id="wpConfirm" autocomplete="off" autocapitalize="characters" placeholder="SIL" style="margin:-8px 0 18px;text-align:center;font-weight:750;letter-spacing:.15em" aria-label="Onay metni">',
+      validate:el=>{ const v=($('#wpConfirm',el).value||'').trim().toLocaleUpperCase('tr'); if(v!=='SIL' && v!=='SİL'){ shake($('#wpConfirm',el)); return false; } return true; }});
+    if(!ok1) return;
+    // 2) yönetici şifresi
+    let pw = '';
+    const ok2 = await confirmDialog({title:'Yönetici şifresi', icon:'lock', ok:'Doğrula ve sil', danger:true,
+      text:'Son adım: Yönetici Paneli şifreni yaz.',
+      extra:'<input class="input" id="wpPw" type="password" autocomplete="current-password" style="margin:-8px 0 18px" aria-label="Yönetici şifresi">',
+      validate:el=>{ pw=$('#wpPw',el).value; if(!pw){ shake($('#wpPw',el)); return false; } return true; }});
+    if(!ok2) return;
+    const btn = $('#wpGo',sh.el); busy(btn,true,'Doğrulanıyor…');
+    try{ await reauthOwner(pw); }
+    catch(e){ busy(btn,false); toast(/wrong-password|invalid-credential|invalid-login/.test(e.code||'')?'Şifre yanlış. Hiçbir şey silinmedi.':authMsg(e)+' Hiçbir şey silinmedi.','error',{duration:6000}); return; }
+    // 3) otomatik yedek
+    btn.innerHTML='Yedek indiriliyor…';
+    try{
+      snap = await wipeSnapshot();
+      const dump = {app:'donerkasa', kind:'teslim-oncesi-yedek', exported:new Date().toISOString(), shop:SHOP, data:{}, people:S.people, members:S.members, config:S.config};
+      WIPE_COLS.forEach(c=>{ dump.data[c[0]] = snap[c[0]].map(x=>Object.assign({id:x.id}, x.data)); });
+      if(!downloadFile('doner-kasa-teslim-oncesi-yedek-'+today()+'.json', JSON.stringify(dump), 'application/json')) throw new Error('yedek');
+    }catch(e){ busy(btn,false); toast('Yedek indirilemedi, temizlik yapılmadı','error',{duration:6000}); return; }
+    // 4) toplu silme
+    btn.innerHTML='Siliniyor…';
+    const refs = []; WIPE_COLS.forEach(c=>snap[c[0]].forEach(x=>refs.push(x.ref)));
+    const removedUsers = delUsers ? others.slice() : [];
+    removedUsers.forEach(p=>{ refs.push(D('people',p.id)); if(p.uid) refs.push(D('members',p.uid)); });
+    Object.keys(S.members||{}).forEach(uid=>{ const m=S.members[uid]; if(delUsers && m && m.role!=='admin' && !refs.some(r=>r.path && r.path.endsWith('/members/'+uid))) refs.push(D('members',uid)); });
+    const prog = $('#wpProg',sh.el); let done = 0;
+    try{
+      for(let i=0;i<refs.length;i+=400){
+        const b = FB.writeBatch(fs); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit();
+        done = Math.min(refs.length, i+400); prog.innerHTML='<div class="progress" style="margin-top:12px"><i style="width:'+(done/refs.length*100)+'%"></i></div><p class="muted" style="text-align:center">'+NF0.format(done)+' / '+NF0.format(refs.length)+'</p>';
+      }
+      const b2 = FB.writeBatch(fs);
+      b2.set(D('state','main'), {recLast:{}}, {merge:true});
+      if(delUsers){ const keep = S.people.filter(p=>p.role==='admin'); b2.set(D('public','roster'), {biz:S.settings.biz, people:keep.map(rosterEntry)}); }
+      await b2.commit();
+    }catch(e){
+      busy(btn,false); console.warn(e);
+      toast('Temizlik yarıda kaldı ('+NF0.format(done)+' kayıt silindi): '+(/permission/.test(e.code||'')?'güvenlik kuralları güncel değil. Yeni firestore.rules dosyasını yayınla ve tekrar dene.':(e.message||e.code)),'error',{duration:9000});
+      return;
+    }
+    if(delUsers){
+      const keep = S.people.filter(p=>p.role==='admin'); S.people = keep;
+      lsSet(LS.roster, {biz:S.settings.biz, people:keep.map(rosterEntry)});
+      const ph = lsGet(LS.pinh,{}); removedUsers.forEach(p=>delete ph[p.id]); lsSet(LS.pinh, ph);
+    }
+    TXM.clear(); rebuildTx(); S.suppliers=[]; S.payments=[]; S.closings=[]; S.staff=[]; S.payroll=[]; S.recLast={};
+    if(UI.kasaDraft) UI.kasaDraft = {};
+    sh.close(true);
+    toast(NF0.format(total() + removedUsers.length)+' kayıt silindi'+(removedUsers.length?' · '+removedUsers.length+' kullanıcı kaldırıldı':''),'success',{duration:6000});
+    setTimeout(()=>switchUser(), 900);
+  };
 }
 
 /* =========================================================
@@ -3885,7 +4225,7 @@ function showPinEntry(p, lockMode){
 }
 function enterApp(){
   gateHide();
-  UI.view = 'home'; UI.lastView = null;
+  UI.view = 'ledger'; UI.ledgerDate = null; UI.lastView = null;
   resetData(); startListeners(); buildShell(); renderView();
   audit('giriş','oturum',ME.pid,null,null);
   startIdle();
@@ -3998,10 +4338,10 @@ function openCustomRange(cur, apply){
 const ACTIONS = {
   new:()=>openForm(),
   theme:()=>{ S.settings.theme = isDark()?'light':'dark'; save(); applyTheme(); renderView(); redrawCharts(); },
-  csv:exportCSV, tour:showTour, navmore:openNavMore, newstaff:()=>editStaff(null), platforms:openPlatforms,
+  csv:exportCSV, tour:showTour, quickexp:openQuickExpense, quicksale:()=>openForm({preset:{t:'in', d:ledgerDay()}}), editopen:openEditOpening, ledgerclose:ledgerCloseDay, ledgerwa:ledgerSendWA, waset:openWaSettings, navmore:openNavMore, newstaff:()=>editStaff(null), platforms:openPlatforms,
   cats:()=>openCats('out'), budgets:openBudgets, recurring:openRecurring,
   memenu:openMeMenu, switchuser:()=>switchUser(), changepin:openChangePin, panel:openPanelLogin,
-  adduser:()=>editUser(null), ownerpw:openOwnerPassword, owneremail:openOwnerEmail, trash:openTrash,
+  adduser:()=>editUser(null), wipe:openWipe, wipeinfo:()=>openPanelLogin(), ownerpw:openOwnerPassword, owneremail:openOwnerEmail, trash:openTrash,
   copyinv:()=>{ const i=$('#invLink'); try{ navigator.clipboard.writeText(i.value).then(()=>toast('Link kopyalandı','success'),()=>{ i.select(); toast('Linki seçtim, kopyala','info'); }); }catch(e){ i.select(); } },
   changecfg:async ()=>{ if(await confirmDialog({title:'Firebase ayarları değiştirilsin mi?', text:'Bu cihaz şu anki dükkandan çıkar ve yeni ayar kodu ister. Bu dükkanın verileri silinmez; “Vazgeç, gömülü ayarlarla devam et” ile geri dönebilirsin.', ok:'Devam', danger:true})){ await logout(); lsSet(LS.cfgEdit,true); location.reload(); } },
   resetdevice:async ()=>{ if(await confirmDialog({title:'Bu cihaz ayrılsın mı?', text:'Bu telefondaki bağlantı ayarları silinir. Veriler bulutta kalır. Tekrar bağlamak için davet linki gerekir.', ok:'Ayır', danger:true})){ await logout(); [LS.cfg,LS.shop,LS.roster,LS.pinh].forEach(lsDel); location.reload(); } },
@@ -4028,7 +4368,7 @@ document.addEventListener('click',e=>{
     if(a==='reopen'){ reopenDay(act.dataset.id); return; }
     if(ACTIONS[a]){ ACTIONS[a](); return; }
   }
-  if(t.closest('#fab')){ if(ME.mode==='app') openForm(); return; }
+  if(t.closest('#fab')){ if(ME.mode==='app'){ if(UI.view==='ledger') openQuickExpense(); else openForm(); } return; }
   const inView = t.closest('#view');
   if(!inView) return;
   let b;
@@ -4053,6 +4393,7 @@ document.addEventListener('click',e=>{
   if((b=t.closest('[data-staff]'))){ openStaff(b.dataset.staff); return; }
   if((b=t.closest('[data-stp]'))){ const p=b.dataset.stp; if(p==='custom') openCustomRange(UI.st,(a,z)=>{ Object.assign(UI.st,{p:'custom',cf:a,ct:z}); renderStaff(); }); else { UI.st.p=p; renderStaff(); } return; }
   if((b=t.closest('[data-kday]'))){ const d=addDays(UI.kasaDate||today(),+b.dataset.kday); if(d<=today()){ UI.kasaDate=d; renderKasa(); } return; }
+  if((b=t.closest('[data-lday]'))){ const d=addDays(ledgerDay(),+b.dataset.lday); if(d<=today()){ UI.ledgerDate=d; renderLedger(); } return; }
   if((b=t.closest('[data-kgo]'))){ UI.kasaDate=b.dataset.kgo; renderKasa(); window.scrollTo({top:0,behavior:'smooth'}); return; }
   if((b=t.closest('[data-rtab]'))){ UI.rep.tab=b.dataset.rtab; renderReports(); return; }
   if((b=t.closest('[data-ryear]'))){ UI.rep.year+=+b.dataset.ryear; renderReports(); return; }
@@ -4075,7 +4416,7 @@ document.addEventListener('keydown',e=>{
   const tg=e.target, typing = tg && (tg.tagName==='INPUT'||tg.tagName==='TEXTAREA'||tg.tagName==='SELECT'||tg.isContentEditable);
   if(typing || e.ctrlKey || e.metaKey || e.altKey || currentSheet) return;
   if(!ME.mode || !$('#gate').hidden) return;
-  if((e.key==='n'||e.key==='N') && ME.mode==='app'){ e.preventDefault(); openForm(); }
+  if((e.key==='n'||e.key==='N') && ME.mode==='app'){ e.preventDefault(); if(UI.view==='ledger') openQuickExpense(); else openForm(); }
   else if(e.key==='/'){ e.preventDefault(); go('tx'); setTimeout(()=>{ const s=$('#txSearch'); if(s) s.focus(); },30); }
 });
 let rzT; addEventListener('resize',()=>{ clearTimeout(rzT); rzT=setTimeout(redrawCharts,150); });
