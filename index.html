@@ -799,6 +799,13 @@ html[data-fs="xl"] .cat-grid{grid-template-columns:repeat(auto-fill,minmax(104px
 @media (max-width:360px){.ledger-cta{grid-template-columns:1fr}}
 body[data-view="ledger"] .fab{display:none}
 
+/* ilk kurulum */
+.setup-h{margin:0;font-size:calc(15px*var(--fs,1));font-weight:750;letter-spacing:-.01em}
+.chips-t{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chip-t{display:inline-flex;align-items:center;gap:5px;min-height:40px;padding:8px 13px;border-radius:999px;border:1.5px solid var(--border-strong);background:var(--surface);color:var(--text-2);font:inherit;font-size:calc(14px*var(--fs,1));font-weight:600;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer}
+.chip-t.on{background:var(--in-bg);border-color:var(--in-line);color:var(--text)}
+.chip-t.req{opacity:.85}
+
 @media (min-width:1000px){.mobile-only{display:none!important}}
 @media (max-width:999px){.desk-only{display:none!important}}
 </style>
@@ -918,24 +925,44 @@ async function checkLocalPin(pid, pin){ try{ const m=lsGet(LS.pinh,{}); return !
 
 /* ---------- oturum ---------- */
 function roster(){ return (lsGet(LS.roster,{people:[]}).people||[]); }
+/* Sunucudan "Kim giriyor?" listesi: 'ok' | 'empty' (dükkan/kullanıcı yok) | 'net' (bağlantı hatası) */
 async function refreshRoster(){
-  try{ const s = await FB.getDoc(D('public','roster')); if(s.exists()){ lsSet(LS.roster, s.data()); return true; } }catch(e){}
-  return false;
+  try{
+    const s = await withTimeout(FB.getDoc(D('public','roster')), 15000);
+    const fromCache = !!(s.metadata && s.metadata.fromCache);
+    if(s.exists()){ const d=s.data(); lsSet(LS.roster, d); return (d.people||[]).length ? 'ok' : (fromCache?'net':'empty'); }
+    return fromCache ? 'net' : 'empty';
+  }catch(e){ return 'net'; }
+}
+/* Bağlantı hataları "yanlış şifre/PIN" diye gösterilmesin */
+function isNetErr(e){
+  const c = String((e && e.code) || ''), m = String((e && e.message) || '');
+  return /network-request-failed|internal-error|unavailable|deadline-exceeded|timeout|local\/offline|local\/net|auth\/timeout/.test(c)
+    || (!c && /offline|network|timed? ?out|terminated|fetch/i.test(m))
+    || /client is offline|has already been terminated|Failed to fetch/i.test(m);
+}
+function withTimeout(p, ms){
+  return new Promise((res, rej)=>{
+    const t = setTimeout(()=>rej({code:'local/timeout', message:'zaman aşımı'}), ms||20000);
+    Promise.resolve(p).then(v=>{ clearTimeout(t); res(v); }, e=>{ clearTimeout(t); rej(e); });
+  });
 }
 async function pinSignIn(person, pin){
   if(auth.currentUser && auth.currentUser.uid===person.uid && !SYNC.online){
+    const m = lsGet(LS.pinh,{});
+    if(!m[person.id]) throw {code:'local/net'};          // bu cihazda kayıtlı PIN yok: internetsiz doğrulanamaz
     if(await checkLocalPin(person.id, pin)) return true;
     throw {code:'local/wrong'};
   }
   if(!navigator.onLine && !(window.__FB_MOCK__)) throw {code:'local/offline'};
   if(auth.currentUser && auth.currentUser.email!==person.email) await FB.signOut(auth);
-  await FB.signInWithEmailAndPassword(auth, person.email, pin);
+  await withTimeout(FB.signInWithEmailAndPassword(auth, person.email, pin), 20000);
   await rememberPin(person.id, pin);
   return true;
 }
 async function loadMe(){
   const u = auth.currentUser; if(!u) throw new Error('no user');
-  const m = await FB.getDoc(D('members',u.uid));
+  const m = await withTimeout(FB.getDoc(D('members',u.uid)), 20000);
   if(!m.exists()) throw {code:'local/nomember'};
   const md = m.data();
   if(md.active===false) throw {code:'local/inactive'};
@@ -944,8 +971,9 @@ async function loadMe(){
 }
 async function ownerSignIn(email, pw){
   if(auth.currentUser) await FB.signOut(auth);
-  const cred = await FB.signInWithEmailAndPassword(auth, email, pw);
-  const o = await FB.getDoc(FB.doc(fs,'owners',cred.user.uid));
+  if(!navigator.onLine && !(window.__FB_MOCK__)) throw {code:'local/offline'};
+  const cred = await withTimeout(FB.signInWithEmailAndPassword(auth, email, pw), 20000);
+  const o = await withTimeout(FB.getDoc(FB.doc(fs,'owners',cred.user.uid)), 20000);
   if(!o.exists() || (SHOP && o.data().shopId!==SHOP)){ await FB.signOut(auth); throw {code:'local/notowner'}; }
   SHOP = o.data().shopId; lsSet(LS.shop, SHOP); lsSet(LS.owner, email); if((lsGet(LS.ownerPending,'')||'').toLowerCase()===email.toLowerCase()) lsDel(LS.ownerPending);
   Object.assign(ME, {uid:cred.user.uid, pid:'owner', role:'admin', perms:{}, owner:true, name:'Yönetici', color:'#15161a', mode:'panel'});
@@ -966,16 +994,25 @@ function canEditTx(x){
   return can('editPast') || (Date.now()-(x.ts||0)) < 24*3600000;
 }
 
-/* ---------- ikincil uygulama ile PIN hesabı açma (yönetici oturumu düşmesin) ---------- */
+/* ---------- ikincil uygulama ile PIN hesabı açma (yönetici oturumu düşmesin) ----------
+   İkincil uygulama bir kez açılır ve tekrar kullanılır; hiçbir zaman kapatılmaz/silinmez
+   (kapatmak ana bağlantıyı etkileyebiliyordu). */
+let secAuth = null;
+function getSecAuth(){
+  if(secAuth) return secAuth;
+  const name = 'dkSec';
+  let app = null;
+  try{ app = (FB.getApps ? FB.getApps() : []).find(a=>a && a.name===name) || null; }catch(e){}
+  if(!app) app = FB.initializeApp(activeCfg(), name);
+  try{ secAuth = FB.initializeAuth(app,{persistence:FB.inMemoryPersistence}); }catch(e){ secAuth = FB.getAuth(app); }
+  return secAuth;
+}
 async function createPinAccount(email, pin){
-  const sec = FB.initializeApp(activeCfg(), 'sec'+Date.now());
-  try{
-    let sa; try{ sa = FB.initializeAuth(sec,{persistence:FB.inMemoryPersistence}); }catch(e){ sa = FB.getAuth(sec); }
-    const cred = await FB.createUserWithEmailAndPassword(sa, email, pin);
-    const uid = cred.user.uid;
-    try{ await FB.signOut(sa); }catch(e){}
-    return uid;
-  } finally { try{ await FB.deleteApp(sec); }catch(e){} }
+  const sa = getSecAuth();
+  const cred = await withTimeout(FB.createUserWithEmailAndPassword(sa, email, pin), 25000);
+  const uid = cred.user.uid;
+  try{ await FB.signOut(sa); }catch(e){}
+  return uid;
 }
 
 /* ---------- canlı veri ---------- */
@@ -2915,7 +2952,7 @@ function renderSettings(){
     li('switchuser','users','Kullanıcı değiştir / Çıkış','“Kim giriyor?” ekranına döner')+'</div></div>'+
   (isAdmin()?'<div class="set-group"><h3>Veri</h3><div class="set-card">'+li('csv','file','Excel için CSV indir','Yüklü kayıtlar (son iki ay ve açtığın eski dönemler)','')+'</div></div>':'')+
   '<div class="set-group"><h3>WhatsApp günlük raporu</h3><div class="set-card">'+li(isAdmin()?'panel':'noop','upload','Ortak telefon numarası',(waCfg().phone?esc(waCfg().phone):'Kayıtlı değil · WhatsApp kişi seçtirir')+(isAdmin()?' · değiştirmek için Yönetici paneli → WhatsApp günlük raporu':''),isAdmin()?null:'')+'</div></div>'+
-  (isAdmin()?'<div class="set-group"><h3>Teslim öncesi temizlik</h3><div class="set-card">'+li('wipeinfo','trash','Test verilerini sil','Yönetici paneli şifresiyle açılır · Panel → Teslim öncesi temizlik')+'</div></div>':'')+
+
   '<div class="set-group"><h3>Yönetim</h3><div class="set-card">'+li('panel','shield','Yönetici paneli','Kullanıcılar, kategoriler, işletme ayarları · yönetici şifresi ister')+li('tour','info','Tanıtımı tekrar göster','','')+'</div></div>'+
   '<div class="set-group"><h3>Hakkında</h3><div class="set-card" style="padding:16px;font-size:calc(14px*var(--fs,1));color:var(--text-2);line-height:1.7">'+
     NF0.format(S.tx.length)+' kayıt yüklü · '+S.suppliers.length+' tedarikçi · '+S.closings.length+' kapanış<br>Veriler Firebase’de saklanır ve dükkandaki tüm telefonlarda anlık eşitlenir. İnternet yokken de kayıt girebilirsin; bağlantı gelince kendiliğinden gönderilir.<br><span class="desk-only">Kısayollar: <kbd>N</kbd> yeni kayıt · <kbd>/</kbd> arama · <kbd>Esc</kbd> kapat</span></div></div>';
@@ -3725,7 +3762,6 @@ function renderPanel(){
     li('cats','tag','Kategoriler',S.cats.length+' kategori · ekle, yeniden adlandır, sil, sırala, ikon ve renk')+
     li('recurring','repeat','Tekrarlayan giderler',S.recurring.length?S.recurring.length+' kalem · her ay yöneticilere hatırlatılır':'Kira, elektrik, maaş gibi')+
     li('budgets','target','Aylık bütçe limitleri',catsOf('out').filter(c=>c.budget>0).length+' kategoride limit var')+'</div></div>'+
-  '<div class="set-group"><h3>Teslim öncesi temizlik</h3><div class="set-card">'+li('wipe','trash','<span style="color:var(--out)">Test verilerini sil</span>','Tüm kayıtlar, gün sonları, cari, personel ve geçmiş silinir; giriş, kategoriler ve ayarlar kalır')+'</div></div>'+
   '<div class="set-group"><h3>Bu cihaz</h3><div class="set-card">'+li('changecfg','settings','Firebase ayarlarını değiştir',usingEmbedded()?'Şu an gömülü ayar: '+esc(EMBED_CFG.projectId)+' · başka müşteri kurulumu için':'Şu an özel ayar: '+esc(activeCfg().projectId))+li('resetdevice','alert','Bu cihazı dükkandan ayır','Firebase ayarlarını ve kayıtlı giriş bilgilerini bu telefondan siler. Veriler silinmez.')+'</div></div>';
   $('#view').innerHTML = html;
   const bi = $('#setBiz'); bi.addEventListener('change',()=>{ const v=bi.value.trim(); if(!v) return; setConfig({biz:v},'İşletme adı'); dbSet(['public','roster'],{biz:v},true,'Liste').catch(()=>{}); lsSet(LS.roster, Object.assign(lsGet(LS.roster,{}),{biz:v})); toast('İşletme adı kaydedildi','success'); });
@@ -3744,7 +3780,8 @@ function editUser(pid){
     (T.role!=='admin'?'<div class="form-sec"><span class="label">Çalışan izinleri</span><div class="set-card" style="padding:0 14px">'+PERMS.map(x=>'<button type="button" class="perm" data-perm="'+x[0]+'" role="switch" aria-checked="'+!!T.perms[x[0]]+'"><div class="grow"><div style="font-weight:650">'+x[1]+'</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">'+x[2]+'</div></div><span class="switch'+(T.perms[x[0]]?' on':'')+'"></span></button>').join('')+'</div></div>':'')+
     (!p?'<div class="form-sec two"><div class="field"><label for="uPin">6 haneli PIN</label><input class="input" id="uPin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" style="letter-spacing:.3em;text-align:center"></div><div class="field"><label for="uPin2">PIN tekrar</label><input class="input" id="uPin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" style="letter-spacing:.3em;text-align:center"></div></div><p class="muted" style="font-size:calc(12.5px*var(--fs,1));margin:6px 0 0">PIN’i kişiye kendin söyle. Sonra kendisi “PIN’imi değiştir” ile değiştirebilir.</p>'
       :'<div class="form-sec"><button type="button" class="perm" data-uact="active" role="switch" aria-checked="'+T.active+'"><div class="grow"><div style="font-weight:650">Hesap aktif</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">Pasif kullanıcı giriş yapamaz, eski kayıtları adıyla kalır</div></div><span class="switch'+(T.active?' on':'')+'"></span></button>'+
-        '<button type="button" class="btn btn-secondary btn-block" style="margin-top:10px" data-uact="resetpin">'+ic('lock',18)+' PIN sıfırla</button></div>')+
+        '<button type="button" class="btn btn-secondary btn-block" style="margin-top:10px" data-uact="resetpin">'+ic('lock',18)+' PIN sıfırla</button>'+
+        '<button type="button" class="btn btn-ghost btn-block" style="margin-top:6px;color:var(--out)" data-uact="deluser">'+ic('trash',18)+' Kullanıcıyı sil</button></div>')+
     '<div class="amount-err" id="uErr"></div>';
   const sh = openSheet({title:p?esc(p.name):'Yeni kullanıcı', body:body(), foot:'<button class="btn btn-primary btn-lg" id="uSave">'+(p?'Kaydet':'Kullanıcıyı oluştur')+'</button>', focus:p?null:'#uName'});
   const sb = sh.el.querySelector('.sheet-b');
@@ -3756,6 +3793,7 @@ function editUser(pid){
     else if(b.dataset.perm){ T.perms[b.dataset.perm]=!T.perms[b.dataset.perm]; redraw(); }
     else if(b.dataset.uact==='active'){ T.active=!T.active; redraw(); }
     else if(b.dataset.uact==='resetpin'){ sh.close(true); resetPin(pid); }
+    else if(b.dataset.uact==='deluser'){ deleteUser(pid, sh); }
   });
   $('#uName',sh.el).addEventListener('input',e=>{ T.name=e.target.value; });
   $('#uSave',sh.el).onclick = async ()=>{
@@ -3773,7 +3811,7 @@ function editUser(pid){
     if(p && p.role==='admin' && (T.role!=='admin'||!T.active) && S.people.filter(x=>x.role==='admin'&&x.active!==false).length<=1){ err.textContent='En az bir aktif yönetici kalmalı.'; return; }
     if(!navigator.onLine && !window.__FB_MOCK__){ err.textContent='Kullanıcı işlemleri için internet gerekli.'; return; }
     busy(btn,true,'Kaydediliyor…');
-    try{ await savePerson(pid, T, pin); sh.close(); toast(p?'Kullanıcı güncellendi':T.name+' eklendi · PIN’ini kendisine söyle','success',{duration:4000}); renderView(); }
+    try{ await withTimeout(savePerson(pid, T, pin), 40000); sh.close(); toast(p?'Kullanıcı güncellendi':T.name+' eklendi · PIN’ini kendisine söyle','success',{duration:4000}); renderView(); }
     catch(e){ console.warn(e); busy(btn,false); err.textContent=authMsg(e); }
   };
 }
@@ -3794,6 +3832,27 @@ async function savePerson(pid, T, pin){
   S.people = list; S.members[uidv] = {pid, role:T.role, active:T.active, perms};
   lsSet(LS.roster, {biz:S.settings.biz, people:list.map(rosterEntry)});
   audit(isNew?'kullanıcı eklendi':'kullanıcı güncellendi','kullanıcı',pid,isNew?null:rosterEntry(Object.assign({id:pid},prev)),rosterEntry(Object.assign({id:pid},pdoc)));
+}
+async function deleteUser(pid, sh){
+  const p = S.people.find(x=>x.id===pid); if(!p) return;
+  if(p.role==='admin' && p.active!==false && S.people.filter(x=>x.role==='admin'&&x.active!==false).length<=1){ toast('En az bir aktif yönetici kalmalı. Önce başka birini yönetici yap.','error',{duration:5000}); return; }
+  if(!(await confirmDialog({title:p.name+' silinsin mi?', text:'Bu kişi artık giriş yapamaz ve “Kim giriyor?” listesinden kalkar. Girdiği eski kayıtlar silinmez, adıyla kalır.', ok:'Kullanıcıyı sil', danger:true, icon:'trash'}))) return;
+  if(!navigator.onLine && !window.__FB_MOCK__){ toast(NET_MSG,'error'); return; }
+  try{
+    const b = FB.writeBatch(fs);
+    const uids = new Set([p.uid].concat(Object.keys(S.members).filter(u=>S.members[u] && S.members[u].pid===pid)).filter(Boolean));
+    uids.forEach(u=>b.delete(D('members',u)));
+    b.delete(D('people',pid));
+    const list = S.people.filter(x=>x.id!==pid);
+    b.set(D('public','roster'), {biz:S.settings.biz, people:list.map(rosterEntry)});
+    await withTimeout(b.commit(), 20000);
+    uids.forEach(u=>delete S.members[u]);
+    S.people = list; lsSet(LS.roster,{biz:S.settings.biz, people:list.map(rosterEntry)});
+    const m = lsGet(LS.pinh,{}); if(m[pid]){ delete m[pid]; lsSet(LS.pinh,m); }
+    audit('kullanıcı silindi','kullanıcı',pid,rosterEntry(p),null);
+    if(sh) sh.close(true);
+    toast(p.name+' silindi','success'); renderView();
+  }catch(e){ console.warn(e); toast('Kullanıcı silinemedi: '+authMsg(e),'error',{duration:6000}); }
 }
 function resetPin(pid){
   const p = S.people.find(x=>x.id===pid); if(!p) return;
@@ -3846,7 +3905,7 @@ function openOwnerPassword(){
       await FB.updatePassword(u, b);
       audit('yönetici şifresi değişti','yönetici','owner',null,null);
       sh.close(); toast('Yönetici şifresi değişti. Bir dahaki girişte yeni şifreni kullan.','success',{duration:5000});
-    }catch(e){ busy(btn,false); err.textContent = /wrong-password|invalid-credential|invalid-login/.test(e.code||'') ? 'Şu anki şifre yanlış.' : authMsg(e); }
+    }catch(e){ busy(btn,false); err.textContent = !isNetErr(e) && /wrong-password|invalid-credential|invalid-login/.test(e.code||'') ? 'Şu anki şifre yanlış.' : authMsg(e); }
   };
 }
 function openOwnerEmail(){
@@ -3873,7 +3932,7 @@ function openOwnerEmail(){
       $('.sheet-f',sh.el).innerHTML = '<button class="btn btn-primary btn-lg" data-close-ok>Tamam</button>';
       $('[data-close-ok]',sh.el).onclick = ()=>sh.close();
       sh.el._snap = snapInputs(sh.el);
-    }catch(e){ busy(btn,false); err.textContent = /wrong-password|invalid-credential|invalid-login/.test(e.code||'') ? 'Şifre yanlış.' : authMsg(e); }
+    }catch(e){ busy(btn,false); err.textContent = !isNetErr(e) && /wrong-password|invalid-credential|invalid-login/.test(e.code||'') ? 'Şifre yanlış.' : authMsg(e); }
   };
 }
 
@@ -3907,109 +3966,16 @@ async function openTrash(){
   });
 }
 
-/* ---------- Teslim öncesi temizlik (sadece Yönetici Paneli hesabı) ---------- */
-const WIPE_COLS = [
-  ['tx','Gelir / gider kayıtları'], ['ptx','Personel ödemeleri (maaş, avans, prim, mesai)'], ['payroll','Hakediş kayıtları (maaşa eklenen mesai/prim, kesinti)'],
-  ['staff','Personel kartları'], ['closings','Gün sonu kapanışları'], ['suppliers','Cari kartları (tedarikçiler)'], ['payments','Cari ödemeleri'],
-  ['photos','Fiş fotoğrafları'], ['days','Elle girilen açılış kasaları'], ['audit','İşlem geçmişi (denetim günlüğü)']
-];
-async function wipeSnapshot(){
-  const out = {};
-  const rs = await Promise.all(WIPE_COLS.map(c=>FB.getDocs(C(c[0]))));
-  rs.forEach((r,i)=>{ out[WIPE_COLS[i][0]] = r.docs.map(d=>({id:d.id, ref:d.ref, data:d.data()})); });
-  return out;
-}
-async function openWipe(){
-  if(!ME.owner){ toast('Bu bölüm sadece Yönetici Paneli hesabıyla açılır','error'); return; }
-  const sh = openSheet({title:'Teslim Öncesi Temizlik', noDirty:true, body:'<p class="muted" id="wpInfo">Kayıtlar sayılıyor…</p>'});
-  let snap;
-  try{ snap = await wipeSnapshot(); }catch(e){ $('#wpInfo',sh.el).textContent='Kayıtlar okunamadı. İnternet bağlantısını ve güvenlik kurallarının güncel olduğunu kontrol et.'; return; }
-  if(sh.closed) return;
-  const others = S.people.filter(p=>p.role!=='admin');
-  let delUsers = false;
-  const total = ()=>WIPE_COLS.reduce((a,c)=>a+snap[c[0]].length,0);
-  const body = ()=>'<div class="banner danger" style="margin-bottom:14px">'+ic('alert',22)+'<div class="grow"><b>Geri alınamaz</b>Dükkanı müşteriye teslim etmeden önce test verilerini kalıcı olarak siler. Silmeden önce tüm veriler otomatik olarak yedek dosyası olarak indirilir.</div></div>'+
-    '<div class="set-group" style="margin-top:0"><h3>Silinecekler · '+NF0.format(total())+' kayıt</h3><div class="set-card" style="padding:4px 16px">'+
-      WIPE_COLS.map(c=>'<div class="who-row"><span class="grow" style="font-weight:600">'+esc(c[1])+'</span><b class="num">'+NF0.format(snap[c[0]].length)+'</b></div>').join('')+
-      '<div class="who-row"><span class="grow" style="font-weight:600">Silinenler (çöp kutusu)</span><span class="muted">yukarıdakilerle birlikte</span></div></div></div>'+
-    '<div class="set-group"><h3>Kalacaklar</h3><div class="set-card" style="padding:12px 16px;font-size:calc(14.5px*var(--fs,1));line-height:1.7">'+ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' Yönetici hesabı ve giriş bilgileri<br>'+
-      ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' Kategoriler, online platformlar ve komisyon oranları<br>'+
-      ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' İşletme adı, para birimi, tekrarlayan giderler ve bütçe ayarları<br>'+
-      ic('check',16,2.4).replace('<svg','<svg style="display:inline;vertical-align:-3px;color:var(--in)"')+' Yönetici rolündeki kullanıcılar ('+esc(S.people.filter(p=>p.role==='admin').map(p=>p.name).join(', ')||'—')+')</div></div>'+
-    '<div class="set-group"><h3>İsteğe bağlı</h3><div class="set-card"><button type="button" class="perm" id="wpUsers" role="switch" aria-checked="'+delUsers+'"'+(others.length?'':' disabled')+'><div class="grow"><div style="font-weight:650">Test kullanıcılarını da sil</div><div class="muted" style="font-size:calc(12.5px*var(--fs,1))">'+(others.length?'Yönetici hariç '+others.length+' kullanıcı: '+esc(others.map(p=>p.name).join(', '))+'. Giriş yetkileri ve PIN’leri kaldırılır.':'Silinecek çalışan kullanıcı yok.')+'</div></div><span class="switch'+(delUsers?' on':'')+'"></span></button></div></div>'+
-    '<div id="wpProg"></div>';
-  const foot = '<button class="btn btn-danger btn-lg" id="wpGo">'+ic('trash',19)+' Temizliği başlat</button>';
-  sh.el.querySelector('.sheet-b').innerHTML = body();
-  sh.el.insertAdjacentHTML('beforeend','<div class="sheet-f">'+foot+'</div>');
-  sh.el.addEventListener('click', e=>{ const b=e.target.closest('#wpUsers'); if(!b||b.disabled) return; delUsers=!delUsers; b.setAttribute('aria-checked',delUsers); b.querySelector('.switch').classList.toggle('on',delUsers); });
-  $('#wpGo',sh.el).onclick = async ()=>{
-    const n = total() + (delUsers?others.length:0);
-    // 1) uyarı + SIL yazma
-    const ok1 = await confirmDialog({title:'Geri alınamaz!', danger:true, icon:'alert', ok:'Devam',
-      text:'<b>'+NF0.format(total())+' kayıt</b>'+(delUsers?' ve <b>'+others.length+' kullanıcı</b>':'')+' kalıcı olarak silinecek. Bu işlem geri alınamaz.<br>Onaylamak için kutuya <b>SIL</b> yaz.',
-      extra:'<input class="input" id="wpConfirm" autocomplete="off" autocapitalize="characters" placeholder="SIL" style="margin:-8px 0 18px;text-align:center;font-weight:750;letter-spacing:.15em" aria-label="Onay metni">',
-      validate:el=>{ const v=($('#wpConfirm',el).value||'').trim().toLocaleUpperCase('tr'); if(v!=='SIL' && v!=='SİL'){ shake($('#wpConfirm',el)); return false; } return true; }});
-    if(!ok1) return;
-    // 2) yönetici şifresi
-    let pw = '';
-    const ok2 = await confirmDialog({title:'Yönetici şifresi', icon:'lock', ok:'Doğrula ve sil', danger:true,
-      text:'Son adım: Yönetici Paneli şifreni yaz.',
-      extra:'<input class="input" id="wpPw" type="password" autocomplete="current-password" style="margin:-8px 0 18px" aria-label="Yönetici şifresi">',
-      validate:el=>{ pw=$('#wpPw',el).value; if(!pw){ shake($('#wpPw',el)); return false; } return true; }});
-    if(!ok2) return;
-    const btn = $('#wpGo',sh.el); busy(btn,true,'Doğrulanıyor…');
-    try{ await reauthOwner(pw); }
-    catch(e){ busy(btn,false); toast(/wrong-password|invalid-credential|invalid-login/.test(e.code||'')?'Şifre yanlış. Hiçbir şey silinmedi.':authMsg(e)+' Hiçbir şey silinmedi.','error',{duration:6000}); return; }
-    // 3) otomatik yedek
-    btn.innerHTML='Yedek indiriliyor…';
-    try{
-      snap = await wipeSnapshot();
-      const dump = {app:'donerkasa', kind:'teslim-oncesi-yedek', exported:new Date().toISOString(), shop:SHOP, data:{}, people:S.people, members:S.members, config:S.config};
-      WIPE_COLS.forEach(c=>{ dump.data[c[0]] = snap[c[0]].map(x=>Object.assign({id:x.id}, x.data)); });
-      if(!downloadFile('doner-kasa-teslim-oncesi-yedek-'+today()+'.json', JSON.stringify(dump), 'application/json')) throw new Error('yedek');
-    }catch(e){ busy(btn,false); toast('Yedek indirilemedi, temizlik yapılmadı','error',{duration:6000}); return; }
-    // 4) toplu silme
-    btn.innerHTML='Siliniyor…';
-    const refs = []; WIPE_COLS.forEach(c=>snap[c[0]].forEach(x=>refs.push(x.ref)));
-    const removedUsers = delUsers ? others.slice() : [];
-    removedUsers.forEach(p=>{ refs.push(D('people',p.id)); if(p.uid) refs.push(D('members',p.uid)); });
-    Object.keys(S.members||{}).forEach(uid=>{ const m=S.members[uid]; if(delUsers && m && m.role!=='admin' && !refs.some(r=>r.path && r.path.endsWith('/members/'+uid))) refs.push(D('members',uid)); });
-    const prog = $('#wpProg',sh.el); let done = 0;
-    try{
-      for(let i=0;i<refs.length;i+=400){
-        const b = FB.writeBatch(fs); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit();
-        done = Math.min(refs.length, i+400); prog.innerHTML='<div class="progress" style="margin-top:12px"><i style="width:'+(done/refs.length*100)+'%"></i></div><p class="muted" style="text-align:center">'+NF0.format(done)+' / '+NF0.format(refs.length)+'</p>';
-      }
-      const b2 = FB.writeBatch(fs);
-      b2.set(D('state','main'), {recLast:{}}, {merge:true});
-      if(delUsers){ const keep = S.people.filter(p=>p.role==='admin'); b2.set(D('public','roster'), {biz:S.settings.biz, people:keep.map(rosterEntry)}); }
-      await b2.commit();
-    }catch(e){
-      busy(btn,false); console.warn(e);
-      toast('Temizlik yarıda kaldı ('+NF0.format(done)+' kayıt silindi): '+(/permission/.test(e.code||'')?'güvenlik kuralları güncel değil. Yeni firestore.rules dosyasını yayınla ve tekrar dene.':(e.message||e.code)),'error',{duration:9000});
-      return;
-    }
-    if(delUsers){
-      const keep = S.people.filter(p=>p.role==='admin'); S.people = keep;
-      lsSet(LS.roster, {biz:S.settings.biz, people:keep.map(rosterEntry)});
-      const ph = lsGet(LS.pinh,{}); removedUsers.forEach(p=>delete ph[p.id]); lsSet(LS.pinh, ph);
-    }
-    TXM.clear(); rebuildTx(); S.suppliers=[]; S.payments=[]; S.closings=[]; S.staff=[]; S.payroll=[]; S.recLast={};
-    if(UI.kasaDraft) UI.kasaDraft = {};
-    sh.close(true);
-    toast(NF0.format(total() + removedUsers.length)+' kayıt silindi'+(removedUsers.length?' · '+removedUsers.length+' kullanıcı kaldırıldı':''),'success',{duration:6000});
-    setTimeout(()=>switchUser(), 900);
-  };
-}
-
 /* =========================================================
    GİRİŞ KAPISI: kurulum, dükkan oluşturma, "Kim giriyor?", PIN, kilit
    ========================================================= */
 const USER_COLORS = ['#2563eb','#f97316','#16a34a','#db2777','#7c3aed','#0891b2','#dc2626','#ca8a04','#0d9488','#4f46e5','#9333ea','#475569'];
 function gateShow(html){ const g=$('#gate'); g.innerHTML='<div class="gate-in">'+html+'</div>'; g.hidden=false; g.scrollTop=0; document.body.style.overflow='hidden'; return g; }
 function gateHide(){ const g=$('#gate'); g.hidden=true; g.innerHTML=''; document.body.style.overflow=''; }
+const NET_MSG = 'Bağlantı hatası, tekrar dene.';
 function authMsg(e){
   const c = (e && e.code) || '';
+  if(isNetErr(e)) return NET_MSG;
   const M = {
     'auth/invalid-email':'E-posta adresi geçersiz.',
     'auth/email-already-in-use':'Bu e-posta ile zaten hesap var. “Yönetici girişi” sekmesinden giriş yap.',
@@ -4022,7 +3988,6 @@ function authMsg(e){
     'auth/configuration-not-found':'Firebase’de Authentication açılmamış. Kurulum rehberindeki Adım 3’ü yap.',
     'auth/api-key-not-valid.-please-pass-a-valid-api-key.':'Firebase ayar kodu hatalı. Ayarları yeniden yapıştır.',
     'permission-denied':'Yetki yok. Güvenlik kurallarını yayınladığından emin ol (Kurulum Adım 5).',
-    'local/offline':'Başka kullanıcıya geçmek için internet gerekli.',
     'local/wrong':'PIN yanlış.', 'local/nomember':'Bu kullanıcı bu dükkana bağlı değil. Yöneticiye sor.', 'local/inactive':'Hesabın pasif. Yöneticiye sor.',
     'local/notowner':'Bu hesap bu dükkanın yöneticisi değil.',
     'auth/requires-recent-login':'Oturum süresi doldu. Paneli kapatıp yönetici şifrenle tekrar gir, sonra yeniden dene.',
@@ -4066,9 +4031,17 @@ async function boot(){
   if(!SHOP){
     const found = await findShopPointer();
     if(found){ SHOP = found; lsSet(LS.shop, SHOP); }
-    else return showConnect(found===null);
+    else if(found===null) return showSetup();      // veritabanı boş: ilk kurulum
+    else return showConnect();                     // okunamadı: bağlantı hatası
   }
-  await refreshRoster();
+  let rs = await refreshRoster();
+  if(rs==='empty'){
+    // bu cihazdaki dükkan kodu artık yok ya da hiç kullanıcı yok: güncel dükkanı ara, yoksa kurulum
+    const found = await findShopPointer();
+    if(found && found!==SHOP){ SHOP = found; lsSet(LS.shop, SHOP); lsDel(LS.roster); rs = await refreshRoster(); }
+    if(rs==='empty'){ if(found===undefined) return showConnect(); lsDel(LS.shop); lsDel(LS.roster); lsDel(LS.pinh); SHOP=null; return showSetup(); }
+  }
+  if(rs==='net' && !roster().length) return showConnect();
   if(auth.currentUser && !roster().some(p=>p.uid===auth.currentUser.uid)){ try{ await FB.signOut(auth); }catch(e){} }
   showRoster();
 }
@@ -4079,16 +4052,96 @@ function gateError(title, text, resetCfg){
   const r=$('#gReset'); if(r) r.onclick=()=>{ lsDel(LS.cfg); lsDel(LS.shop); lsDel(LS.roster); lsSet(LS.cfgEdit,true); location.reload(); };
 }
 
-/* ---------- 0) Bu cihazda dükkan bulunamadı ---------- */
-function showConnect(noShopYet){
-  gateShow('<div class="gate-logo">D</div><h1>Dükkana bağlan</h1><p class="lead">'+(noShopYet?'Henüz kurulmuş bir dükkan bulunamadı. Yöneticiysen dükkanı kur ya da yönetici hesabınla giriş yap.':'Bu cihaz dükkanı bulamadı. Bir kez bağlaman yeterli.')+'</p>'+
-    '<div class="card stack"><button class="btn btn-primary btn-lg btn-block" id="cnOwner">'+ic('lock',19)+' Yönetici girişi</button>'+
-    '<button class="btn btn-secondary btn-lg btn-block" id="cnNew">'+ic('plus',19)+' Yeni dükkan kur</button></div>'+
-    '<div class="card section"><div class="field"><label for="joinIn">Çalışan mısın? Yöneticinin gönderdiği davet linkini yapıştır</label><input class="input" id="joinIn" placeholder="https://…#katil=…" autocomplete="off"></div><button class="btn btn-secondary btn-block" id="joinGo" style="margin-top:10px">Davetle katıl</button></div>');
+/* ---------- 0) Sunucuya ulaşılamadı ---------- */
+function showConnect(){
+  gateShow('<div class="gate-logo" style="background:var(--out)">'+ic('alert',28)+'</div><h1>Bağlantı hatası</h1><p class="lead">Sunucuya ulaşılamadı. İnternet bağlantını kontrol edip tekrar dene.</p>'+
+    '<button class="btn btn-primary btn-lg btn-block" id="cnRetry">'+ic('repeat',19)+' Tekrar dene</button>'+
+    '<div class="card stack section"><button class="btn btn-secondary btn-block" id="cnOwner">'+ic('lock',18)+' Yönetici girişi</button></div>'+
+    joinBox());
+  $('#cnRetry').onclick=()=>location.reload();
   $('#cnOwner').onclick=()=>showOwnerStart('login');
-  $('#cnNew').onclick=()=>showOwnerStart('new');
-  $('#joinGo').onclick=()=>{ const v=$('#joinIn').value.trim(), i=v.indexOf('#katil='); if(i<0){ toast('Bu bir davet linki değil','error'); return; }
-    try{ const j=b64d(v.slice(i+7)); if(!j.s) throw 0; if(j.c && j.c.projectId!==EMBED_CFG.projectId) lsSet(LS.cfg,j.c); else lsDel(LS.cfg); lsSet(LS.shop,j.s); lsDel(LS.roster); location.reload(); }catch(e){ toast('Davet linki bozuk','error'); } };
+  bindJoin();
+}
+function joinBox(){ return '<div class="card section"><div class="field"><label for="joinIn">Çalışan mısın? Yöneticinin gönderdiği davet linkini yapıştır</label><input class="input" id="joinIn" placeholder="https://…#katil=…" autocomplete="off"></div><button class="btn btn-secondary btn-block" id="joinGo" style="margin-top:10px">Davetle katıl</button></div>'; }
+function bindJoin(){
+  const b=$('#joinGo'); if(!b) return;
+  b.onclick=()=>{ const v=$('#joinIn').value.trim(), i=v.indexOf('#katil='); if(i<0){ toast('Bu bir davet linki değil','error'); return; }
+    try{ const j=b64d(v.slice(i+7)); if(!j.s) throw 0; if(j.c && j.c.projectId!==EMBED_CFG.projectId) lsSet(LS.cfg,j.c); else lsDel(LS.cfg); lsSet(LS.shop,j.s); lsDel(LS.roster); lsDel(LS.cfgEdit); location.reload(); }catch(e){ toast('Davet linki bozuk','error'); } };
+}
+
+/* ---------- 0b) İLK KURULUM: veritabanında hiç kullanıcı yoksa ---------- */
+const REQ_CATS = ['c_sat','c_onl','c_per','c_dgd'];   // uygulamanın kullandığı temel kategoriler (kapatılamaz)
+function showSetup(){
+  let col = USER_COLORS[0];
+  const selC = new Set(DEF_CATS.map(c=>c.id)), selP = new Set(DEF_PLATS.map(p=>p.id));
+  const chip = (kind,id,name,on,lock)=>'<button type="button" class="chip-t'+(on?' on':'')+(lock?' req':'')+'" data-'+kind+'="'+id+'" aria-pressed="'+on+'"'+(lock?' title="Zorunlu"':'')+'>'+(on?ic('check',14,3):'')+esc(name)+'</button>';
+  const catsHtml = ()=>'<div class="field"><span class="label">Gelir kategorileri</span><div class="chips-t">'+DEF_CATS.filter(c=>c.t==='in').map(c=>chip('sc',c.id,c.name,selC.has(c.id),REQ_CATS.indexOf(c.id)>-1)).join('')+'</div></div>'+
+    '<div class="field" style="margin-top:10px"><span class="label">Gider kategorileri</span><div class="chips-t">'+DEF_CATS.filter(c=>c.t==='out').map(c=>chip('sc',c.id,c.name,selC.has(c.id),REQ_CATS.indexOf(c.id)>-1)).join('')+'</div></div>';
+  const platHtml = ()=>'<div class="chips-t">'+DEF_PLATS.map(p=>chip('sp',p.id,p.name,selP.has(p.id),false)).join('')+'</div>';
+  gateShow('<div class="gate-logo">D</div><h1>İlk kurulum</h1><p class="lead">Dükkanını bir kez kur. Bitince yönetici olarak otomatik giriş yapılır.</p>'+
+    '<div class="card stack"><h3 class="setup-h">1 · Dükkan ve yönetici</h3>'+
+    '<div class="field"><label for="sBiz">Dükkan adı</label><input class="input" id="sBiz" placeholder="Örn: Usta Döner" maxlength="40"></div>'+
+    '<div class="field"><label for="sName">Yönetici adı (senin adın)</label><input class="input" id="sName" placeholder="Örn: Mehmet" maxlength="24"></div>'+
+    '<div class="field"><span class="label">Rengin</span>'+swatchPick(col)+'</div></div>'+
+    '<div class="card stack section"><h3 class="setup-h">2 · Yönetici paneli girişi</h3><p class="muted" style="margin:0;font-size:calc(13.5px*var(--fs,1))">Bu e-posta ve şifre Yönetici Paneli’nin anahtarıdır, kimseyle paylaşma.</p>'+
+    '<div class="field"><label for="sEmail">Yönetici e-postası</label><input class="input" id="sEmail" type="email" autocomplete="username" inputmode="email"></div>'+
+    '<div class="field"><label for="sPw">Yönetici şifresi <span class="muted">(en az 8 karakter)</span></label><input class="input" id="sPw" type="password" autocomplete="new-password"></div>'+
+    '<div class="field"><label for="sPw2">Şifre tekrar</label><input class="input" id="sPw2" type="password" autocomplete="new-password"></div></div>'+
+    '<div class="card stack section"><h3 class="setup-h">3 · Günlük giriş PIN’i</h3><p class="muted" style="margin:0;font-size:calc(13.5px*var(--fs,1))">Her gün “Kim giriyor?” ekranında avatarına dokunup bu 6 haneli PIN ile gireceksin.</p>'+
+    '<div class="two"><div class="field"><label for="sPin">6 haneli PIN</label><input class="input" id="sPin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" style="letter-spacing:.3em;text-align:center"></div><div class="field"><label for="sPin2">PIN tekrar</label><input class="input" id="sPin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" style="letter-spacing:.3em;text-align:center"></div></div></div>'+
+    '<div class="card stack section"><h3 class="setup-h">4 · Kategoriler</h3><p class="muted" style="margin:0;font-size:calc(13.5px*var(--fs,1))">Kullanmadıklarına dokunup kapat. Sonra panelden ekleyip değiştirebilirsin.</p><div id="sCats">'+catsHtml()+'</div></div>'+
+    '<div class="card stack section"><h3 class="setup-h">5 · Ödeme platformları</h3><p class="muted" style="margin:0;font-size:calc(13.5px*var(--fs,1))">Online sipariş aldığın platformlar. Komisyon oranlarını sonra panelden girersin.</p><div id="sPlats">'+platHtml()+'</div></div>'+
+    '<div class="amount-err" id="sErr" role="alert"></div><button class="btn btn-primary btn-lg btn-block" id="sGo">'+ic('check',19,2.4)+' Kurulumu tamamla</button>'+
+    '<button class="btn btn-ghost btn-block" style="margin-top:10px" id="sHave">Dükkanın zaten kurulu mu? Yönetici girişi</button>'+joinBox());
+  bindSwatch($('#gate'), ()=>col, c=>col=c);
+  $('#gate').addEventListener('click',e=>{
+    const c=e.target.closest('[data-sc]'), p=e.target.closest('[data-sp]');
+    if(c){ const id=c.dataset.sc; if(REQ_CATS.indexOf(id)>-1){ toast('Bu kategori uygulama için gerekli','info'); return; } selC.has(id)?selC.delete(id):selC.add(id); $('#sCats').innerHTML=catsHtml(); }
+    if(p){ const id=p.dataset.sp; selP.has(id)?selP.delete(id):selP.add(id); $('#sPlats').innerHTML=platHtml(); }
+  });
+  $('#sHave').onclick=()=>showOwnerStart('login');
+  bindJoin();
+  $('#sGo').onclick = async ()=>{
+    const v=id=>$('#'+id).value, biz=v('sBiz').trim(), name=v('sName').trim(), em=v('sEmail').trim(), pw=v('sPw'), pin=v('sPin'), err=$('#sErr'), btn=$('#sGo');
+    const bad = (t,f)=>{ err.textContent=t; const el=f&&$('#'+f); if(el){ el.focus(); el.scrollIntoView({block:'center'}); } };
+    err.textContent='';
+    if(!biz) return bad('Dükkan adını yaz.','sBiz');
+    if(!name) return bad('Yönetici adını yaz.','sName');
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return bad('Geçerli bir e-posta yaz.','sEmail');
+    if(pw.length<8) return bad('Şifre en az 8 karakter olmalı.','sPw');
+    if(pw!==v('sPw2')) return bad('Şifreler aynı değil.','sPw2');
+    if(!/^\d{6}$/.test(pin)) return bad('PIN tam 6 rakam olmalı.','sPin');
+    if(pin!==v('sPin2')) return bad('PIN’ler aynı değil.','sPin2');
+    if(/^(\d)\1{5}$/.test(pin)||pin==='123456'||pin==='654321') return bad('Bu PIN çok kolay tahmin edilir. Başka bir PIN seç.','sPin');
+    const cats = DEF_CATS.filter(c=>selC.has(c.id)).map((c,i)=>Object.assign({order:i, budget:0}, c));
+    const plats = DEF_PLATS.map((p,i)=>Object.assign({}, p, {order:i, active:selP.has(p.id)}));
+    if(!navigator.onLine && !window.__FB_MOCK__) return bad(NET_MSG);
+    busy(btn,true,'Yönetici hesabı açılıyor…');
+    try{
+      // 1) yönetici hesabı (yarım kalmış kurulumda hesap zaten varsa aynı şifreyle devam edilir)
+      try{ await withTimeout(FB.createUserWithEmailAndPassword(auth, em, pw), 25000); }
+      catch(e){
+        if((e && e.code)!=='auth/email-already-in-use') throw e;
+        try{ await withTimeout(FB.signInWithEmailAndPassword(auth, em, pw), 25000); }
+        catch(e2){ if(isNetErr(e2)) throw e2; throw {code:'local/emailused'}; }
+      }
+      lsSet(LS.owner, em);
+      // bu hesabın zaten çalışan bir dükkanı varsa ona bağlan
+      const o = await withTimeout(FB.getDoc(FB.doc(fs,'owners',auth.currentUser.uid)), 20000);
+      if(o.exists() && o.data().shopId){
+        SHOP = o.data().shopId;
+        if((await refreshRoster())==='ok'){ lsSet(LS.shop,SHOP); await claimShopPointer(); await FB.signOut(auth); toast('Bu hesabın dükkanı bulundu','success'); return showRoster(); }
+      }
+      busy(btn,false); busy(btn,true,'Dükkan kuruluyor…');
+      const person = await createShop(biz, name, col, pin, {cats, platforms:plats});
+      // 2) yönetici otomatik giriş
+      busy(btn,false); busy(btn,true,'Giriş yapılıyor…');
+      await pinSignIn(person, pin);
+      await loadMe();
+      toast('Kurulum tamam. Hoş geldin '+name+'!','success',{duration:4000});
+      enterApp();
+    }catch(e){ console.warn(e); busy(btn,false); err.textContent = e && e.code==='local/emailused' ? 'Bu e-posta ile zaten bir hesap var ve şifre uyuşmadı. Doğru şifreyi yaz ya da başka e-posta kullan.' : authMsg(e); }
+  };
 }
 
 /* ---------- 1) Firebase ayarlarını yapıştır (sadece başka proje için) ---------- */
@@ -4106,16 +4159,13 @@ function showSetupConfig(){
   back.onclick=()=>{ lsDel(LS.cfgEdit); location.reload(); }; $('#gate .gate-in').appendChild(back);
   if(!usingEmbedded()){ const emb=document.createElement('button'); emb.className='btn btn-ghost btn-block'; emb.textContent='Gömülü ayara dön ('+EMBED_CFG.projectId+')';
     emb.onclick=()=>{ [LS.cfg,LS.cfgEdit,LS.shop,LS.roster,LS.pinh].forEach(lsDel); location.reload(); }; $('#gate .gate-in').appendChild(emb); }
-  $('#joinGo').onclick = ()=>{
-    const v=$('#joinIn').value.trim(), i=v.indexOf('#katil=');
-    if(i<0){ toast('Bu bir davet linki değil','error'); return; }
-    try{ const j=b64d(v.slice(i+7)); if(j.c) lsSet(LS.cfg,j.c); else lsDel(LS.cfg); lsSet(LS.shop,j.s); lsDel(LS.roster); lsDel(LS.cfgEdit); location.reload(); }catch(e){ toast('Davet linki bozuk','error'); }
-  };
+  bindJoin();
 }
 
 /* ---------- 2) Yönetici hesabı ---------- */
 function showOwnerStart(mode){
-  mode = mode||'new';
+  mode = mode||'login';
+  if(mode==='new') return showSetup();
   gateShow('<div class="gate-logo">D</div><h1>'+(mode==='new'?'Dükkanını kur':'Yönetici girişi')+'</h1><p class="lead">'+(mode==='new'?'Önce yönetici hesabını oluştur. Bu e-posta ve şifre <b>Yönetici Paneli</b>’nin anahtarıdır, kimseyle paylaşma.':'Daha önce kurduğun dükkanın yönetici e-postası ve şifresiyle gir.')+'</p>'+
     '<div class="seg" style="margin-bottom:14px"><button class="'+(mode==='new'?'on':'')+'" data-om="new">Yeni dükkan</button><button class="'+(mode==='login'?'on':'')+'" data-om="login">Yönetici girişi</button></div>'+
     '<div class="card stack"><div class="field"><label for="oEmail">Yönetici e-postası</label><input class="input" id="oEmail" type="email" autocomplete="username" value="'+esc(lsGet(LS.owner,'')||'')+'"></div>'+
@@ -4139,34 +4189,14 @@ function showOwnerStart(mode){
       lsSet(LS.owner, em);
       const o = await FB.getDoc(FB.doc(fs,'owners',auth.currentUser.uid));
       if(o.exists() && o.data().shopId){ SHOP=o.data().shopId; lsSet(LS.shop,SHOP); await claimShopPointer(); await FB.signOut(auth); await refreshRoster(); toast('Dükkan bulundu','success'); showRoster(); }
-      else showShopWizard();
+      else { try{ await FB.signOut(auth); }catch(x){} showSetup(); toast('Bu hesaba bağlı dükkan yok. Kurulumu tamamla.','info',{duration:5000}); }
     }catch(e){ busy(btn,false); err.textContent = authMsg(e); }
   };
 }
 
-/* ---------- 3) Dükkan sihirbazı ---------- */
-function showShopWizard(){
-  let col = USER_COLORS[0];
-  gateShow('<div class="steps"><i class="on"></i><i class="on"></i></div><h1>İşletme ve ilk kullanıcı</h1><p class="lead">Her gün “Kim giriyor?” ekranında kendi avatarına dokunup 6 haneli PIN’inle gireceksin.</p>'+
-    '<div class="card stack"><div class="field"><label for="wBiz">İşletme adı</label><input class="input" id="wBiz" placeholder="Örn: Usta Döner" maxlength="40"></div>'+
-    '<div class="field"><label for="wName">Senin adın</label><input class="input" id="wName" placeholder="Örn: Mehmet" maxlength="24"></div>'+
-    '<div class="field"><span class="label">Rengin</span>'+swatchPick(col)+'</div>'+
-    '<div class="two"><div class="field"><label for="wPin">6 haneli PIN</label><input class="input" id="wPin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" style="letter-spacing:.3em;text-align:center"></div><div class="field"><label for="wPin2">PIN tekrar</label><input class="input" id="wPin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" style="letter-spacing:.3em;text-align:center"></div></div>'+
-    '<div class="amount-err" id="wErr"></div><button class="btn btn-primary btn-lg btn-block" id="wGo">Dükkanı oluştur</button></div>');
-  bindSwatch($('#gate'), ()=>col, c=>col=c);
-  $('#wGo').onclick = async ()=>{
-    const biz=$('#wBiz').value.trim(), name=$('#wName').value.trim(), pin=$('#wPin').value, err=$('#wErr'), btn=$('#wGo');
-    err.textContent='';
-    if(!biz||!name){ err.textContent='İşletme adını ve kendi adını yaz.'; return; }
-    if(!/^\d{6}$/.test(pin)){ err.textContent='PIN tam 6 rakam olmalı.'; return; }
-    if(pin!==$('#wPin2').value){ err.textContent='PIN’ler aynı değil.'; return; }
-    if(/^(\d)\1{5}$/.test(pin)||pin==='123456'||pin==='654321'){ err.textContent='Bu PIN çok kolay tahmin edilir. Başka bir PIN seç.'; return; }
-    busy(btn,true,'Dükkan kuruluyor…');
-    try{ await createShop(biz, name, col, pin); }
-    catch(e){ console.warn(e); busy(btn,false); err.textContent = authMsg(e); }
-  };
-}
-async function createShop(biz, name, color, pin){
+/* ---------- 3) Dükkanı oluştur ---------- */
+async function createShop(biz, name, color, pin, opt){
+  opt = opt||{};
   const ownerUid = auth.currentUser.uid;
   SHOP = randId(20);
   await FB.setDoc(FB.doc(fs,'shops',SHOP), {name:biz, owners:[ownerUid], createdAt:FB.serverTimestamp()});
@@ -4177,15 +4207,13 @@ async function createShop(biz, name, color, pin){
   const b = FB.writeBatch(fs);
   b.set(D('people',pid), {name, color, role:'admin', active:true, email, uid:pinUid, ver:1, createdAt:FB.serverTimestamp()});
   b.set(D('members',pinUid), {pid, role:'admin', active:true, perms:{}});
-  b.set(D('config','main'), {biz, cur:'sym', cats:DEF_CATS.map((c,i)=>Object.assign({order:i, budget:0}, c)), recurring:[], v:2});
+  b.set(D('config','main'), {biz, cur:'sym', cats:opt.cats||DEF_CATS.map((c,i)=>Object.assign({order:i, budget:0}, c)), platforms:opt.platforms||DEF_PLATS.map((p,i)=>Object.assign({order:i},p)), recurring:[], v:2});
   b.set(D('state','main'), {recLast:{}, lastBackup:null});
   b.set(D('public','roster'), {biz, people:[person]});
   await b.commit();
   await claimShopPointer();
   lsSet(LS.shop, SHOP); lsSet(LS.roster, {biz, people:[person]});
-  await FB.signOut(auth);
-  toast('Dükkan kuruldu','success');
-  showRoster();
+  return person;
 }
 
 /* ---------- 4) Kim giriyor? ---------- */
@@ -4199,7 +4227,7 @@ function showRoster(){
   $$('[data-who]').forEach(b=>b.onclick=()=>showPinEntry(ppl.find(p=>p.id===b.dataset.who)));
   $('#gPanel').onclick = openPanelLogin;
   $('#gTheme').onclick = ()=>{ S.settings.theme=isDark()?'light':'dark'; save(); applyTheme(); showRoster(); };
-  if(navigator.onLine) refreshRoster().then(ok=>{ if(ok && $('.roster') && JSON.stringify(lsGet(LS.roster,{}).people)!==JSON.stringify(r.people)) showRoster(); });
+  if(navigator.onLine) refreshRoster().then(ok=>{ if(ok==='ok' && $('.roster') && JSON.stringify(lsGet(LS.roster,{}).people)!==JSON.stringify(r.people)) showRoster(); });
 }
 function showPinEntry(p, lockMode){
   if(!p) return;
@@ -4217,7 +4245,8 @@ function showPinEntry(p, lockMode){
     }catch(e){
       tries++;
       const c = e && e.code || '';
-      if(/wrong-password|invalid-credential|invalid-login|local\/wrong/.test(c)) msg(tries>=3?'PIN yanlış. Unuttuysan yöneticiye sıfırlat.':'PIN yanlış, tekrar dene');
+      if(isNetErr(e)) msg(NET_MSG);
+      else if(/wrong-password|invalid-credential|invalid-login|local\/wrong/.test(c)) msg(tries>=3?'PIN yanlış. Unuttuysan yöneticiye sıfırlat.':'PIN yanlış, tekrar dene');
       else msg(authMsg(e));
       pad.reset(true);
     }
@@ -4302,7 +4331,7 @@ function openChangePin(){
       await FB.updatePassword(u, b); await rememberPin(ME.pid, b);
       audit('pin değişti','kullanıcı',ME.pid,null,null);
       sh.close(); toast('PIN değişti','success');
-    }catch(e){ busy(btn,false); err.textContent = /wrong|invalid-cred|invalid-login/.test(e.code||'') ? 'Şu anki PIN yanlış.' : authMsg(e); }
+    }catch(e){ busy(btn,false); err.textContent = !isNetErr(e) && /wrong|invalid-cred|invalid-login/.test(e.code||'') ? 'Şu anki PIN yanlış.' : authMsg(e); }
   };
 }
 
@@ -4341,7 +4370,7 @@ const ACTIONS = {
   csv:exportCSV, tour:showTour, quickexp:openQuickExpense, quicksale:()=>openForm({preset:{t:'in', d:ledgerDay()}}), editopen:openEditOpening, ledgerclose:ledgerCloseDay, ledgerwa:ledgerSendWA, waset:openWaSettings, navmore:openNavMore, newstaff:()=>editStaff(null), platforms:openPlatforms,
   cats:()=>openCats('out'), budgets:openBudgets, recurring:openRecurring,
   memenu:openMeMenu, switchuser:()=>switchUser(), changepin:openChangePin, panel:openPanelLogin,
-  adduser:()=>editUser(null), wipe:openWipe, wipeinfo:()=>openPanelLogin(), ownerpw:openOwnerPassword, owneremail:openOwnerEmail, trash:openTrash,
+  adduser:()=>editUser(null), ownerpw:openOwnerPassword, owneremail:openOwnerEmail, trash:openTrash,
   copyinv:()=>{ const i=$('#invLink'); try{ navigator.clipboard.writeText(i.value).then(()=>toast('Link kopyalandı','success'),()=>{ i.select(); toast('Linki seçtim, kopyala','info'); }); }catch(e){ i.select(); } },
   changecfg:async ()=>{ if(await confirmDialog({title:'Firebase ayarları değiştirilsin mi?', text:'Bu cihaz şu anki dükkandan çıkar ve yeni ayar kodu ister. Bu dükkanın verileri silinmez; “Vazgeç, gömülü ayarlarla devam et” ile geri dönebilirsin.', ok:'Devam', danger:true})){ await logout(); lsSet(LS.cfgEdit,true); location.reload(); } },
   resetdevice:async ()=>{ if(await confirmDialog({title:'Bu cihaz ayrılsın mı?', text:'Bu telefondaki bağlantı ayarları silinir. Veriler bulutta kalır. Tekrar bağlamak için davet linki gerekir.', ok:'Ayır', danger:true})){ await logout(); [LS.cfg,LS.shop,LS.roster,LS.pinh].forEach(lsDel); location.reload(); } },
